@@ -136,7 +136,8 @@ fn main() {
     let mut img = GrayImage::from_pixel(PANEL_W, PANEL_H, Luma([WHITE]));
 
     draw_rect_border(&mut img, 24, 4);
-    draw_centered(&mut img, 260, 12, "KINDLE-COBALT");
+    draw_centered(&mut img, 220, 12, "RUST-WARIO");
+    draw_centered(&mut img, 340, 6, "FRAMEWORK DEMO");
     draw_hline(&mut img, 420, 120, (PANEL_W - 120) as u32, 3);
     draw_centered(&mut img, 480, 6, "HARDFLOAT MUSL: CONFIRMED");
     draw_centered(&mut img, 560, 6, "RUNNING NATIVE ON KINDLEOS");
