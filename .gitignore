@@ -1,3 +1,12 @@
-/target
+/*/target
 /**/target
 .DS_Store
+minivmac-src/setup_t
+minivmac-src/setup.sh
+minivmac-src/bld/
+minivmac-src/cfg/
+minivmac-src/minivmac
+minivmac-src/minivmac-36.04.src.tgz
+oasis-sysroot/
+hello-c/hello
+minivmac-src/Makefile

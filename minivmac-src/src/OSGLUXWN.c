@@ -1111,6 +1111,14 @@ LOCALFUNC tMacErr ActvCodeFileSave(ui3p p)
 
 LOCALVAR Window my_main_wind = 0;
 LOCALVAR GC my_gc = NULL;
+/* Kindle's e-ink X server exposes an 8-bit StaticGray visual, not the
+   1-bit mono or 24-bit color visuals this code was written against.
+   XPutImage requires the image depth to exactly match the drawable
+   depth, so a 1-bit XYBitmap image can't go straight onto our 8-bit
+   window -- bridge through an intermediate 1-bit pixmap and
+   XCopyPlane, which is the standard Xlib way to blit across depths. */
+LOCALVAR Pixmap mono_pixmap = 0;
+LOCALVAR GC mono_gc = NULL;
 LOCALVAR blnr NeedFinishOpen1 = falseblnr;
 LOCALVAR blnr NeedFinishOpen2 = falseblnr;
 
@@ -1510,11 +1518,25 @@ LOCALPROC HaveChangedScreenBuff(ui4r top, ui4r left,
 			char *saveData = my_Scaled_image->data;
 			my_Scaled_image->data = (char *)ScalingBuff;
 
+#if UseColorImage
 			XPutImage(x_display, my_main_wind, my_gc, my_Scaled_image,
 				left * MyWindowScale, top * MyWindowScale,
 				XDest, YDest,
 				(right - left) * MyWindowScale,
 				(bottom - top) * MyWindowScale);
+#else
+			/* see comment at mono_pixmap's declaration */
+			XPutImage(x_display, mono_pixmap, mono_gc, my_Scaled_image,
+				left * MyWindowScale, top * MyWindowScale,
+				left * MyWindowScale, top * MyWindowScale,
+				(right - left) * MyWindowScale,
+				(bottom - top) * MyWindowScale);
+			XCopyPlane(x_display, mono_pixmap, my_main_wind, my_gc,
+				left * MyWindowScale, top * MyWindowScale,
+				(right - left) * MyWindowScale,
+				(bottom - top) * MyWindowScale,
+				XDest, YDest, 1);
+#endif
 
 			my_Scaled_image->data = saveData;
 		}
@@ -1565,9 +1587,21 @@ LOCALPROC HaveChangedScreenBuff(ui4r top, ui4r left,
 			char *saveData = my_image->data;
 			my_image->data = the_data;
 
+#if UseColorImage
 			XPutImage(x_display, my_main_wind, my_gc, my_image,
 				left, top, XDest, YDest,
 				right - left, bottom - top);
+#else
+			/* bridge depth-1 image across to the 8-bit StaticGray
+			   window via an intermediate 1-bit pixmap; see comment
+			   at mono_pixmap's declaration. */
+			XPutImage(x_display, mono_pixmap, mono_gc, my_image,
+				left, top, left, top,
+				right - left, bottom - top);
+			XCopyPlane(x_display, mono_pixmap, my_main_wind, my_gc,
+				left, top, right - left, bottom - top,
+				XDest, YDest, 1);
+#endif
 
 			my_image->data = saveData;
 		}
@@ -3111,7 +3145,6 @@ LOCALPROC HandleTheEvent(XEvent *theEvent)
 					y1 = (y1 + (MyWindowScale - 1)) / MyWindowScale;
 				}
 #endif
-
 #if VarFullScreen
 				if (UseFullScreen)
 #endif
@@ -3626,11 +3659,12 @@ LOCALFUNC blnr CreateMainWindow(void)
 		return falseblnr;
 	} else {
 		char *win_name =
-			(NULL != n_arg) ? n_arg : (
-#if CanGetAppPath
-			(NULL != app_name) ? app_name :
-#endif
-			kStrAppName);
+			/* lab126's awesome WM (see
+			   /etc/xdg/awesome/lab126LayerLogic.lua) only raises
+			   windows whose WM_NAME matches L:A_N:application_...;
+			   confirmed live on Kindle Scribe 2026-08-15/16, same
+			   architecture on the Oasis. */
+			"L:A_N:application_ID:net.gryphel.minivmac_M:false_PC:N_RC:true_O:U";
 		XSelectInput(x_display, my_main_wind,
 			ExposureMask | KeyPressMask | KeyReleaseMask
 			| ButtonPressMask | ButtonReleaseMask
@@ -3682,6 +3716,27 @@ LOCALFUNC blnr CreateMainWindow(void)
 		}
 		XSetState(x_display, my_gc, x_black.pixel, x_white.pixel,
 			GXcopy, AllPlanes);
+
+		mono_pixmap = XCreatePixmap(x_display, my_main_wind,
+			vMacScreenWidth
+#if EnableMagnify
+				* MyWindowScale
+#endif
+			,
+			vMacScreenHeight
+#if EnableMagnify
+				* MyWindowScale
+#endif
+			, 1);
+		if (None == mono_pixmap) {
+			WriteExtraErr("XCreatePixmap failed.");
+			return falseblnr;
+		}
+		mono_gc = XCreateGC(x_display, mono_pixmap, 0, NULL);
+		if (NULL == mono_gc) {
+			WriteExtraErr("XCreateGC failed.");
+			return falseblnr;
+		}
 
 #if VarFullScreen
 		if (! UseFullScreen)

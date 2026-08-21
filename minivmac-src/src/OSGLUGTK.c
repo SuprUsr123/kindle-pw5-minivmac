@@ -1616,6 +1616,12 @@ int main(int argc, char *argv[])
 	gtk_init(&argc, &argv);
 
 	window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+	/* lab126's awesome WM (see /etc/xdg/awesome/lab126LayerLogic.lua)
+	   only raises windows whose WM_NAME matches L:A_N:application_...;
+	   without this the window maps but stays buried under the stock
+	   Kindle UI. Confirmed live on Kindle Scribe 2026-08-15/16, same
+	   architecture on the Oasis. */
+	gtk_window_set_title(GTK_WINDOW(window), "L:A_N:application_ID:net.gryphel.minivmac_M:false_PC:N_RC:true_O:U");
 	gtk_widget_set_name(window, "Test Input");
 	gtk_window_set_resizable(GTK_WINDOW(window), FALSE);
 
