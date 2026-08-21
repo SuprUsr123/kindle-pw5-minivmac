@@ -1,15 +1,18 @@
-# kindle-cobalt
+# wario
 
-Fun-Friday exploration: is Bandar Labs' [Cobalt](https://bandarlabs.github.io/Cobalt/)
-(a Rust SDK/app-platform for Kobo e-readers) portable "in spirit" to Ryan's
-jailbroken Kindle Oasis 1st gen?
+Fun-Friday e-ink hacking on Ryan's jailbroken Kindle Oasis 1st gen. Named
+after the board itself — `/proc/cpuinfo` on the device reports
+`Hardware: Freescale i.MX 6SoloLite based Wario Board`.
 
-Not a fork of Cobalt. Cobalt hard-gates on exact Kobo Clara BW (N365) hardware
-by design and hooks Kobo's Nickel launcher — none of that applies to a
-lab126/KindleOS device. This repo borrows the *shape* of Cobalt's app model
-(declarative screens, capability-gated HAL, signed OTA delivery) and targets
-the Oasis's actual jailbreak stack (WinterBreak + KUAL + the on-device Alpine
-armv7 chroot), documented in the `Kindle Oasis (Jailbroken)` nelson-wiki page.
+Started as a "could Bandar Labs' [Cobalt](https://bandarlabs.github.io/Cobalt/)
+(a Rust SDK/app-platform for Kobo e-readers) work here in spirit?" question.
+Cobalt hard-gates on exact Kobo Clara BW (N365) hardware by design and hooks
+Kobo's Nickel launcher — none of that applies to a lab126/KindleOS device, and
+nothing here shares code with it. What's genuinely borrowed is just the
+*shape* of the idea (a small native app talking to a capability-scoped HAL)
+applied to the Oasis's real jailbreak stack (WinterBreak + KUAL + the
+on-device Alpine armv7 chroot), documented in the `Kindle Oasis (Jailbroken)`
+nelson-wiki page.
 
 ## Status: pre-work — ABI verification only
 
@@ -48,6 +51,24 @@ hardware?
   ```
 
   Correct float formatting, clean exit. No softfloat cross target needed.
+
+## oasis-hello — first real app
+
+A tiny native Kindle app, not just a probe. Hand-rolled 5x7 bitmap font
+(no TTF, no font licensing to think about) rendered into a full-panel PNG
+via the `image` crate (pure Rust, no C deps — cross-compiled clean on the
+first try), then displayed with the device's own `eips` utility
+(`eips -c` to clear, `eips -g <png> -f` for a full e-ink refresh).
+
+Runs natively on the Oasis, no chroot. Verified with a live
+`kindle-screenshot` capture of the actual panel, not just clean exit codes.
+
+```sh
+export PATH="$HOME/.rustup/toolchains/nightly-aarch64-apple-darwin/bin:$PATH"
+cd oasis-hello && cargo build --release --target armv7-unknown-linux-musleabihf
+scp target/armv7-unknown-linux-musleabihf/release/oasis-hello kindle-ts:/mnt/us/
+ssh kindle-ts '/mnt/us/oasis-hello /mnt/us/oasis-hello.png'
+```
 
 ## Build setup
 
