@@ -3384,7 +3384,6 @@ LOCALFUNC blnr Screen_Init(void)
 	if (! XAllocColor(x_display, Xcmap, &x_white)) {
 		WriteExtraErr("XParseColor white fails");
 	}
-
 	if (! CreateMyBlankCursor(rootwin)) {
 		return falseblnr;
 	}
@@ -3714,7 +3713,11 @@ LOCALFUNC blnr CreateMainWindow(void)
 			WriteExtraErr("XCreateGC failed.");
 			return falseblnr;
 		}
-		XSetState(x_display, my_gc, x_black.pixel, x_white.pixel,
+		/* Mac video-RAM bit=1 renders as white through mini vMac's own
+		   scaling/copy buffers on this backend, not black as raw QuickDraw
+		   convention would suggest -- confirmed empirically on real
+		   hardware (menu bar was black-on-white inverted before this). */
+		XSetState(x_display, my_gc, x_white.pixel, x_black.pixel,
 			GXcopy, AllPlanes);
 
 		mono_pixmap = XCreatePixmap(x_display, my_main_wind,
