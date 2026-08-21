@@ -1,0 +1,2 @@
+[target.armv7-unknown-linux-musleabihf]
+linker = "/opt/homebrew/opt/armv7-unknown-linux-musleabihf/bin/armv7-unknown-linux-musleabihf-gcc"
