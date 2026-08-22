@@ -264,6 +264,41 @@ that space. Verified live: mini vMac's full desktop (menu bar, icons)
 stays visible above, companion's keyboard sits below with no overlap,
 no `bad-client-name` warnings in `/var/log/messages` for the new tag.
 
+### MacPaint and MacWrite attached by default (2026-08-22)
+
+Confirmed first: this build emulates a **Mac Plus** (`CurEmMd kEmMd_Plus`
+in `setup.sh`, also consistent with `EmADB 0` -- the Plus predates ADB).
+
+Ryan's `~/Downloads/MacPaint.img` (402,432 bytes, real HFS floppy,
+volume name "MacPaint") and `MacWrite 4.5.dsk` (Apple DiskCopy 4.2
+format, 409,600-byte payload) both mount directly with zero conversion.
+Confirmed via source before touching hardware:
+`Sony_SupportDC42 1` is enabled in `setup.sh`, and `SONYEMDV.c` has
+genuine auto-detection logic (checks the DC42 magic word at header
+offset 82, then skips the 84-byte header transparently) -- not just
+unused constants.
+
+mini vMac's own `Sony_InsertIth` loop (`OSGLUXWN.c`) accepts every
+command-line argument after the ROM as a disk to insert, up to
+`NumDrives 6`, stopping only on the first one that fails to open. So
+attaching more floppies is just appending paths:
+`minivmac system608.img macpaint.img macwrite.dsk`.
+
+Deployed both images to `/mnt/us/macpaint.img` and `/mnt/us/macwrite.dsk`
+and added `wario-companion/launch-wario.sh` as the one standard way to
+boot the whole setup (mini vMac with all three disks + wario-companion
+docked below), rather than leaving "attach these by default" as
+something to remember to type by hand each session. Verified live: all
+three floppy icons ("System Startup", "MacPaint", "MacWrite") appear on
+the desktop from a single script invocation.
+
+(A local test on minnie's own Homebrew-installed Mini vMac.app was
+attempted first for a fast sanity check, but that's a different,
+separately-configured build -- its GUI expects the ROM dragged in by
+hand rather than taking it as a CLI arg, which is why it hung waiting
+for input rather than confirming anything. Not representative of our
+own build's config; the real verification is the on-device test above.)
+
 ## Investigated and shelved: Einstein (Newton emulator) port (2026-08-21)
 
 Ryan asked whether [pguyot/Einstein](https://github.com/pguyot/Einstein) (the
