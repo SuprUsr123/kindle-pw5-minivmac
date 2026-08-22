@@ -1,0 +1,8 @@
+/* GNU ld script -- patched from oasis-sysroot/usr/lib/libpthread.so.
+   The original references /usr/lib/libpthread_nonshared.a, which was
+   never pulled down into oasis-sysroot (build-only glibc artifact, not
+   present on the live device filesystem either -- confirmed via ssh).
+   Dropping it: it only supplies a couple of fork-safety stub symbols
+   that don't matter for a dynamically-linked -lpthread consumer here. */
+OUTPUT_FORMAT(elf32-littlearm)
+GROUP ( /lib/libpthread.so.0 )
