@@ -41,6 +41,13 @@
  * existing keyboard would mean juggling separate windows/processes for
  * a UI that's supposed to be one window with one toggle button. Reuses
  * the same lab126 awesome-WM WM_NAME trick as mini vMac's own windows.
+ *
+ * Touch feedback: a gray circle flashes wherever the user touches,
+ * regardless of which widget (button or trackpad) is underneath --
+ * implemented via gdk_event_handler_set(), GDK's global event-snooping
+ * hook, since a normal per-widget signal handler only sees events for
+ * that one widget and GTK2 has no compositor/overlay layer to draw a
+ * layer above arbitrary children.
  */
 
 #include <gtk/gtk.h>
@@ -62,6 +69,72 @@ static GtkWidget *notebook;
 static int virt_x, virt_y; /* software-tracked cursor pos, window-relative */
 static gboolean trackpad_dragging = FALSE;
 static double trackpad_last_x, trackpad_last_y;
+static GtkWidget *companion_window; /* set in main(), used by touch indicator */
+
+/* ---- Touch feedback: gray circle flashes wherever the user touches ---- */
+
+#define TOUCH_INDICATOR_RADIUS 26
+#define TOUCH_INDICATOR_MS 900 /* e-ink needs real time to render a
+                                   partial refresh at all -- a fast
+                                   ~200ms fade would likely get
+                                   coalesced away by the EPDC driver
+                                   before ever becoming visible */
+
+typedef struct {
+	GdkWindow *win;
+	GdkRectangle rect;
+} TouchFadeCtx;
+
+static gboolean touch_indicator_fade(gpointer data) {
+	TouchFadeCtx *ctx = data;
+	gdk_window_invalidate_rect(ctx->win, &ctx->rect, TRUE);
+	g_free(ctx);
+	return FALSE; /* one-shot */
+}
+
+/* Draws directly onto the toplevel's own GdkWindow, bypassing normal
+ * widget expose/redraw -- simplest way to paint something that spans
+ * every child widget (buttons, trackpad) without a GTK3-style overlay
+ * container, which GTK2 doesn't have. Self-erasing: schedules a
+ * one-shot invalidate of just that rectangle shortly after, which
+ * triggers GTK's normal expose machinery to redraw whatever was
+ * actually there underneath. */
+static void touch_indicator_show(gint x, gint y) {
+	GdkWindow *win = gtk_widget_get_window(companion_window);
+	if (win == NULL) return;
+
+	cairo_t *cr = gdk_cairo_create(win);
+	cairo_set_source_rgba(cr, 0.35, 0.35, 0.35, 0.5);
+	cairo_arc(cr, x, y, TOUCH_INDICATOR_RADIUS, 0, 2 * G_PI);
+	cairo_fill(cr);
+	cairo_destroy(cr);
+
+	TouchFadeCtx *ctx = g_new(TouchFadeCtx, 1);
+	ctx->win = win;
+	ctx->rect.x = x - TOUCH_INDICATOR_RADIUS - 2;
+	ctx->rect.y = y - TOUCH_INDICATOR_RADIUS - 2;
+	ctx->rect.width = ctx->rect.height = 2 * (TOUCH_INDICATOR_RADIUS + 2);
+	g_timeout_add(TOUCH_INDICATOR_MS, touch_indicator_fade, ctx);
+}
+
+/* GDK's global event hook -- sees every event bound for any widget in
+ * the window BEFORE normal per-widget dispatch, which a regular signal
+ * handler on one widget (a button, the trackpad) cannot do; this is
+ * what lets the indicator appear no matter what's under the finger.
+ * Must forward every event to gtk_main_do_event() -- installing this
+ * handler replaces GTK's own dispatch entirely, app-wide. */
+static void global_event_snoop(GdkEvent *event, gpointer data) {
+	(void)data;
+	if (event->type == GDK_BUTTON_PRESS) {
+		GdkWindow *toplevel = gdk_window_get_toplevel(event->button.window);
+		gint origin_x, origin_y;
+		gdk_window_get_origin(toplevel, &origin_x, &origin_y);
+		touch_indicator_show(
+			(gint)event->button.x_root - origin_x,
+			(gint)event->button.y_root - origin_y);
+	}
+	gtk_main_do_event(event);
+}
 
 /* ---- Window discovery ---- */
 
@@ -137,9 +210,19 @@ static void send_key(KeyCode kc, gboolean press, unsigned int state) {
 	XSendEvent(xdpy, target, False, NoEventMask, &ev);
 }
 
+/* mini vMac's main loop drains its whole pending X event queue before
+ * running any 68k CPU emulation; XSendEvent-ing a press immediately
+ * followed by a release (zero delay) means it can see BOTH in the same
+ * drain and only ever observe the final (released) state -- the down
+ * edge is never visible to the emulated ROM. A real keypress naturally
+ * holds for tens of ms; this holds synthetic ones the same way. */
+#define KEY_HOLD_US 40000
+
 static void send_key_tap(KeySym ks) {
 	KeyCode kc = XKeysymToKeycode(xdpy, ks);
 	send_key(kc, TRUE, 0);
+	XFlush(xdpy);
+	g_usleep(KEY_HOLD_US);
 	send_key(kc, FALSE, 0);
 	XFlush(xdpy);
 }
@@ -150,9 +233,15 @@ static void send_key_tap(KeySym ks) {
 static void send_key_tap_shifted(KeySym ks) {
 	KeyCode shift = XKeysymToKeycode(xdpy, XK_Shift_L);
 	send_key(shift, TRUE, 0);
+	XFlush(xdpy);
+	g_usleep(KEY_HOLD_US);
 	KeyCode kc = XKeysymToKeycode(xdpy, ks);
 	send_key(kc, TRUE, ShiftMask);
+	XFlush(xdpy);
+	g_usleep(KEY_HOLD_US);
 	send_key(kc, FALSE, ShiftMask);
+	XFlush(xdpy);
+	g_usleep(KEY_HOLD_US);
 	send_key(shift, FALSE, 0);
 	XFlush(xdpy);
 }
@@ -197,6 +286,8 @@ static void send_motion(void) {
 static void send_click_burst(int n) {
 	for (int i = 0; i < n; ++i) {
 		send_button(TRUE);
+		g_usleep(KEY_HOLD_US); /* same drain-before-CPU-step issue as
+		                          send_key_tap -- see its comment */
 		send_button(FALSE);
 		if (i + 1 < n) {
 			g_usleep(80000); /* comfortably inside mini vMac's
@@ -374,6 +465,7 @@ int main(int argc, char **argv) {
 	}
 
 	GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+	companion_window = window;
 	/* L:A_N:application (mini vMac's own tag) makes the WM's app-layer
 	 * logic (lab126_application_layer.lua's prv_position_application)
 	 * force EVERY app-layer window to fill the whole available area --
@@ -408,7 +500,9 @@ int main(int argc, char **argv) {
 
 	gtk_widget_show_all(window);
 
-
+	/* Must be installed on a real GdkWindow (post-show/realize) since
+	 * touch_indicator_show() draws directly onto it. */
+	gdk_event_handler_set(global_event_snoop, NULL, NULL);
 	gtk_main();
 	return 0;
 }
