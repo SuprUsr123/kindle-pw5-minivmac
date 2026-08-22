@@ -135,14 +135,10 @@ end). Not prioritized against each other yet.
 
 **Bigger/deferred**
 - E-ink refresh quality pass -- dirty-rect tuning, ghosting, waveform
-  choice. No longer purely theoretical: live-tested 2026-08-22 (see
-  `wario-companion` below) and the mini vMac cursor visibly disappeared
-  or failed to reappear after trackpad-driven motion, despite the
-  underlying event delivery being confirmed correct end-to-end. Strong
-  suspect is the EPDC driver's partial-refresh/damage-coalescing logic
-  dropping a cursor-sized dirty rect as too small to bother committing a
-  waveform update for -- needs investigation with this as the concrete
-  reproduction case, not a fresh unknown.
+  choice. Still a real, open item, but the 2026-08-22 "cursor doesn't
+  move" symptom below was **not** this -- that was a genuine emulation
+  bug (mini vMac pausing when unfocused), now fixed. See
+  `wario-companion` below for the real cause and fix.
 - Xephyr investigation -- explicitly deferred as "not now" during
   planning; still on the table if a second/third app makes the
   generic-abstraction payoff worth it (nested X server presenting a sane
@@ -208,12 +204,44 @@ than left in as defensive dead code.
 
 - Companion window appears on top and focused on launch (screenshot).
 - Mode toggle switches between keyboard and trackpad panels (screenshot).
-- Trackpad press/motion/release fire correctly, compute the right
-  relative delta, resolve to mini vMac's actual window ID, and clamp
-  correctly against its real dimensions (confirmed via temporary
-  instrumentation, since removed).
-- Not verified: the moved cursor being visibly redrawn on mini vMac's
-  side -- see the sharpened e-ink refresh backlog item above.
+- Trackpad drag-select and clicks now genuinely work end to end -- see
+  "Trackpad actually did nothing" below for the real bug and fix.
+
+### Trackpad actually did nothing -- mini vMac pausing itself, not a delivery bug (2026-08-22)
+
+After docking, Ryan reported the trackpad "doesn't seem to actually work
+yet." Easy to misdiagnose as e-ink refresh dropping small updates (the
+backlog item above already primed that theory) -- that was wrong.
+
+Instrumented every layer in turn rather than guess:
+
+1. Companion's own `on_pad_button_press`/`on_pad_motion`/`on_click1`:
+   all fired correctly, with correct deltas.
+2. `send_button`/`send_motion`: resolved mini vMac's real window ID
+   (`0x1c00004`) and correct target coordinates every time; `XSendEvent`
+   returned success for every call.
+3. Given the sender side was fully clean, instrumented mini vMac's own
+   `ButtonPress`/`ButtonRelease`/`MotionNotify` cases directly (it's our
+   own fork) and reran the exact same test: **every single event was
+   received, with exactly the right coordinates and button state.**
+   Delivery was never the problem, at any layer.
+
+The real cause was two steps further in: mini vMac's own main loop
+pauses its entire 68k CPU emulation when it loses real X input focus
+(`gBackgroundFlag`, driven by `FocusOut`) unless `RunInBackground` is
+on, which defaults off. `wario-companion`'s window legitimately holds
+real X focus for keyboard/trackpad input while mini vMac sits unfocused
+in the background sharing the screen -- exactly the situation this
+flag exists for, and exactly the situation a normal single-window mini
+vMac session never hits. Our events were landing and correctly updating
+`MousePositionNotify`/`MyMouseButtonSet` state the entire time; the CPU
+just never advanced to act on any of it.
+
+Fixed in `src/INTLCHAR.h` (tracked source), not `cfg/CNFGRAPI.h` (a
+gitignored, regenerated file that a fresh `setup.sh` run would silently
+revert). Verified live: dragging onto the System Startup and Trash
+icons and clicking now correctly shows each one selected (inverted icon
+and label), cursor tracking the drag the whole way.
 
 ### Docked at the bottom, not full-screen (2026-08-22, same day)
 
