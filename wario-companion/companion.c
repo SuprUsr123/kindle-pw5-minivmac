@@ -444,8 +444,8 @@ static GtkWidget *build_trackpad_panel(void) {
 	gtk_box_pack_start(GTK_BOX(hbox), make_key("1-click", G_CALLBACK(on_click1), NULL), TRUE, TRUE, 0);
 	gtk_box_pack_start(GTK_BOX(hbox), make_key("2-click", G_CALLBACK(on_click2), NULL), TRUE, TRUE, 0);
 	gtk_box_pack_start(GTK_BOX(hbox), make_key("3-click", G_CALLBACK(on_click3), NULL), TRUE, TRUE, 0);
-	gtk_box_pack_start(GTK_BOX(hbox), make_key("mouse down", G_CALLBACK(on_mousedown), NULL), TRUE, TRUE, 0);
-	gtk_box_pack_start(GTK_BOX(hbox), make_key("mouse up", G_CALLBACK(on_mouseup), NULL), TRUE, TRUE, 0);
+	gtk_box_pack_start(GTK_BOX(hbox), make_key("mouse\ndown", G_CALLBACK(on_mousedown), NULL), TRUE, TRUE, 0);
+	gtk_box_pack_start(GTK_BOX(hbox), make_key("mouse\nup", G_CALLBACK(on_mouseup), NULL), TRUE, TRUE, 0);
 	gtk_box_pack_start(GTK_BOX(vbox), hbox, FALSE, FALSE, 0);
 
 	return vbox;
