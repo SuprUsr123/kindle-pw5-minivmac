@@ -88,6 +88,19 @@ static gboolean drag_committed = FALSE; /* this touch already crossed
                                             the moment it committed),
                                             not a plain cursor move */
 static GtkWidget *companion_window; /* set in main(), used by touch indicator */
+static gboolean pen_mode_active = TRUE; /* TRUE: real touches on mini
+                                            vMac's own screen behave as
+                                            they always have -- button
+                                            down while moving, since
+                                            touching the digitizer IS
+                                            pressing. FALSE: button
+                                            press/release on mini vMac's
+                                            window get swallowed (never
+                                            forwarded), motion still
+                                            passes through cleanly, so
+                                            you can nudge the real
+                                            on-screen cursor without it
+                                            drawing/clicking anything. */
 
 /* ---- Touch feedback: gray circle flashes wherever the user touches ---- */
 
@@ -327,6 +340,58 @@ static void send_click_burst(int n) {
 	send_click_burst_at(n, virt_x, virt_y);
 }
 
+/* ---- Pen mode: real digitizer touches on mini vMac's own window ----
+ *
+ * A real finger touching the screen is, at the driver level, already a
+ * button-down (that's just what a touch-to-mouse driver does) -- so
+ * "pen mode" (drawing: button held while the finger moves) is the
+ * default, unmodified behavior already, nothing to build. "Not-pen
+ * mode" (nudge the real cursor without clicking/drawing anything)
+ * needs mini vMac itself to selectively ignore real ButtonPress/
+ * ButtonRelease while still processing MotionNotify normally --
+ * companion alone can't do this by intercepting X11 events in front of
+ * mini vMac's window.
+ *
+ * First attempt was XGrabButton(minivmac_window, owner_events=False)
+ * to redirect events to us and re-synthesize motion-only ones. That
+ * crashed outright: BadAccess (request_code 28 = X_GrabButton) --
+ * lab126's awesome WM almost certainly already holds its own grab on
+ * this window for its tap-to-focus mechanism
+ * (lab126_button_handling.lua), so a second app-level grab on the same
+ * button/window conflicts. Also surfaced a real gotcha worth keeping
+ * in mind: GDK's default X error handler is fatal for ANY error on ANY
+ * connection in the process, including this second xdpy connection --
+ * one bad request took the whole app down.
+ *
+ * Fixed by moving the logic into mini vMac's own source instead (see
+ * PenModeOff in OSGLUXWN.c): a ClientMessage on a custom
+ * _WARIO_PEN_MODE atom toggles it. mini vMac already gates that flag
+ * on event->xany.send_event being False (a REAL event, not one of
+ * OUR XSendEvent-synthesized ones), so this affects only real touches
+ * on its own screen -- companion's own tap-to-click/mouse-down/up
+ * controls are completely unaffected either way. */
+
+static void on_toggle_pen_mode(GtkWidget *w, gpointer d) {
+	(void)d;
+	Window target = minivmac();
+	if (target == None) return;
+	pen_mode_active = !pen_mode_active;
+
+	Atom pen_mode_atom = XInternAtom(xdpy, "_WARIO_PEN_MODE", False);
+	XEvent ev;
+	memset(&ev, 0, sizeof(ev));
+	ev.xclient.type = ClientMessage;
+	ev.xclient.window = target;
+	ev.xclient.message_type = pen_mode_atom;
+	ev.xclient.format = 32;
+	ev.xclient.data.l[0] = pen_mode_active ? 1 : 0;
+	XSendEvent(xdpy, target, False, NoEventMask, &ev);
+	XFlush(xdpy);
+
+	gtk_button_set_label(GTK_BUTTON(w),
+		pen_mode_active ? "pen mode: ON" : "pen mode: OFF (nudge only)");
+}
+
 /* ---- Keyboard panel ---- */
 
 static void on_letter(GtkWidget *w, gpointer data) {
@@ -545,13 +610,61 @@ static GtkWidget *build_trackpad_panel(void) {
 
 /* ---- Mode toggle ---- */
 
-static void on_mode_toggle(GtkWidget *w, gpointer d) {
-	(void)d;
-	gint page = gtk_notebook_get_current_page(GTK_NOTEBOOK(notebook));
-	gint next = (page == 0) ? 1 : 0;
-	gtk_notebook_set_current_page(GTK_NOTEBOOK(notebook), next);
-	gtk_button_set_label(GTK_BUTTON(w),
-		next == 0 ? "switch to TRACKPAD" : "switch to KEYBOARD");
+static GtkWidget *mode_bar; /* container swapped between a single
+                                "switch to TRACKPAD" button (keyboard
+                                panel active) and a split "switch to
+                                KBD" / pen-mode toggle row (trackpad
+                                panel active). */
+
+static void clear_container(GtkWidget *container) {
+	GList *children = gtk_container_get_children(GTK_CONTAINER(container));
+	for (GList *l = children; l; l = l->next) {
+		gtk_container_remove(GTK_CONTAINER(container), GTK_WIDGET(l->data));
+	}
+	g_list_free(children);
+}
+
+static void show_keyboard_mode_bar(void);
+static void show_trackpad_mode_bar(void);
+
+static void on_switch_to_trackpad(GtkWidget *w, gpointer d) {
+	(void)w; (void)d;
+	gtk_notebook_set_current_page(GTK_NOTEBOOK(notebook), 1);
+	show_trackpad_mode_bar();
+}
+
+static void on_switch_to_keyboard(GtkWidget *w, gpointer d) {
+	(void)w; (void)d;
+	gtk_notebook_set_current_page(GTK_NOTEBOOK(notebook), 0);
+	show_keyboard_mode_bar();
+}
+
+static void show_keyboard_mode_bar(void) {
+	clear_container(mode_bar);
+	GtkWidget *btn = gtk_button_new_with_label("switch to TRACKPAD");
+	gtk_widget_set_size_request(btn, -1, 80);
+	g_signal_connect(btn, "clicked", G_CALLBACK(on_switch_to_trackpad), NULL);
+	gtk_container_add(GTK_CONTAINER(mode_bar), btn);
+	gtk_widget_show_all(mode_bar);
+}
+
+static void show_trackpad_mode_bar(void) {
+	clear_container(mode_bar);
+	GtkWidget *hbox = gtk_hbox_new(TRUE, 2);
+
+	GtkWidget *kbd_btn = gtk_button_new_with_label("switch to KBD");
+	gtk_widget_set_size_request(kbd_btn, -1, 80);
+	g_signal_connect(kbd_btn, "clicked", G_CALLBACK(on_switch_to_keyboard), NULL);
+	gtk_box_pack_start(GTK_BOX(hbox), kbd_btn, TRUE, TRUE, 0);
+
+	GtkWidget *pen_btn = gtk_button_new_with_label(
+		pen_mode_active ? "pen mode: ON" : "pen mode: OFF (nudge only)");
+	gtk_widget_set_size_request(pen_btn, -1, 80);
+	g_signal_connect(pen_btn, "clicked", G_CALLBACK(on_toggle_pen_mode), NULL);
+	gtk_box_pack_start(GTK_BOX(hbox), pen_btn, TRUE, TRUE, 0);
+
+	gtk_container_add(GTK_CONTAINER(mode_bar), hbox);
+	gtk_widget_show_all(mode_bar);
 }
 
 int main(int argc, char **argv) {
@@ -584,16 +697,16 @@ int main(int argc, char **argv) {
 	GtkWidget *vbox = gtk_vbox_new(FALSE, 4);
 	gtk_container_add(GTK_CONTAINER(window), vbox);
 
-	GtkWidget *mode_button = gtk_button_new_with_label("switch to TRACKPAD");
-	gtk_widget_set_size_request(mode_button, -1, 80);
-	g_signal_connect(mode_button, "clicked", G_CALLBACK(on_mode_toggle), NULL);
-	gtk_box_pack_start(GTK_BOX(vbox), mode_button, FALSE, FALSE, 0);
+	mode_bar = gtk_vbox_new(FALSE, 0);
+	gtk_box_pack_start(GTK_BOX(vbox), mode_bar, FALSE, FALSE, 0);
 
 	notebook = gtk_notebook_new();
 	gtk_notebook_set_show_tabs(GTK_NOTEBOOK(notebook), FALSE);
 	gtk_notebook_append_page(GTK_NOTEBOOK(notebook), build_keyboard_panel(), NULL);
 	gtk_notebook_append_page(GTK_NOTEBOOK(notebook), build_trackpad_panel(), NULL);
 	gtk_box_pack_start(GTK_BOX(vbox), notebook, TRUE, TRUE, 0);
+
+	show_keyboard_mode_bar(); /* matches default notebook page 0 */
 
 	g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
 
