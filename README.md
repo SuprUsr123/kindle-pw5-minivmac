@@ -415,6 +415,39 @@ see both commit messages for complete detail). Summary:
   is now moot until rendering works at all — never got far enough to
   measure it.
 
+### Update 2 (2026-08-22): fixed — it boots real Newton OS 2.1, and it's slow
+
+The visual/depth block above turned out simpler than the write-up made
+it sound. Ryan pointed at prior Kindle Scribe research (the
+`xephyr-visual` project's `swatch3.c`/xeyes retitle work) establishing
+that this class of lab126 hardware expects plain apps to stay on the
+default depth-8 StaticGray visual. Checked Einstein's own startup code
+and found `TFLApp::InitFLTK()` unconditionally called
+`Fl::visual(FL_RGB)` — a process-wide override forcing every window
+onto 32-bit TrueColor. Removed it (guarded to Linux only). Confirmed
+via `xwininfo` that the window now renders at `Depth 8`, and it
+displays correctly — no FLTK-level patch needed, just stop overriding
+the default.
+
+Also fixed a separate ROM auto-detect issue (Einstein looks for a file
+named exactly `717006`, matching the macOS app bundle's internal
+naming convention, not `717006.rom`) and clicked through Settings →
+Start. **It booted real, unmodified Newton OS 2.1**: boot splash, then
+the standard first-run flow (country select, mailing address entry
+with the full on-screen keyboard), all rendered correctly on the
+physical e-ink screen.
+
+CPU-speed concern from the original feasibility read: confirmed with a
+real number instead of speculation. Tapped "Continue" on the
+country-select screen and bracketed the response with timestamped
+screenshots — still on the country list 10 seconds after the tap,
+already on the next screen 17 seconds after. **Roughly 10-15 seconds
+per screen transition.** Genuinely too slow for real interactive use;
+not yet isolated how much is e-ink partial-refresh overhead (mini
+vMac needed real tuning here) versus actual emulated CPU time.
+
+Full write-up with screenshots: `~/devel/einstein-newton-emu/developer-review.html`.
+
 ## Known unrelated issue found along the way
 
 `~/.config/containers/registries.conf` is corrupted (mangled TOML — looks
