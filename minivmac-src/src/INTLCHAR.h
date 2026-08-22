@@ -1689,7 +1689,19 @@ LOCALVAR const ui4b Cell2UnicodeMap[] = {
 
 LOCALVAR blnr SpeedStopped = falseblnr;
 
-LOCALVAR blnr RunInBackground = (WantInitRunInBackground != 0);
+/* Forced true regardless of WantInitRunInBackground (a gitignored,
+ * generated cfg/ macro that won't survive a fresh setup.sh run): this
+ * project always runs mini vMac alongside wario-companion, a separate
+ * window that legitimately holds real X input focus for keyboard/
+ * trackpad input. Without this, losing focus sets gBackgroundFlag,
+ * which (see the CurSpeedStopped check in OSGLUXWN.c's main loop)
+ * pauses the entire 68k CPU emulation -- mouse/keyboard events from
+ * the companion were being received and correctly processed into
+ * internal state (confirmed via direct instrumentation) but the
+ * emulator never advanced to act on them, so nothing ever appeared to
+ * work. Confirmed fixed live: icon selection, cursor, drag all work
+ * correctly once this is forced on. */
+LOCALVAR blnr RunInBackground = trueblnr;
 
 #if VarFullScreen
 LOCALVAR blnr WantFullScreen = (WantInitFullScreen != 0);
