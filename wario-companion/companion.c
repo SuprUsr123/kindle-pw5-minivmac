@@ -434,6 +434,13 @@ static GtkWidget *build_trackpad_panel(void) {
 	g_signal_connect(pad, "motion-notify-event", G_CALLBACK(on_pad_motion), NULL);
 
 	GtkWidget *hbox = gtk_hbox_new(TRUE, 2);
+	/* Ryan's feedback: real fingers had a harder time with this row than
+	 * the keyboard rows above -- it was sized to GTK's natural minimum
+	 * (a single line of button-label text plus default padding, maybe
+	 * ~50-60px), much shorter than a comfortable touch target. 2.5x
+	 * taller; the drag pad above it (packed expand/fill) shrinks to
+	 * absorb the difference automatically. */
+	gtk_widget_set_size_request(hbox, -1, 150);
 	gtk_box_pack_start(GTK_BOX(hbox), make_key("1-click", G_CALLBACK(on_click1), NULL), TRUE, TRUE, 0);
 	gtk_box_pack_start(GTK_BOX(hbox), make_key("2-click", G_CALLBACK(on_click2), NULL), TRUE, TRUE, 0);
 	gtk_box_pack_start(GTK_BOX(hbox), make_key("3-click", G_CALLBACK(on_click3), NULL), TRUE, TRUE, 0);
