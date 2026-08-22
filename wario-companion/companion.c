@@ -69,6 +69,12 @@ static GtkWidget *notebook;
 static int virt_x, virt_y; /* software-tracked cursor pos, window-relative */
 static gboolean trackpad_dragging = FALSE;
 static double trackpad_last_x, trackpad_last_y;
+static double tap_move_accum = 0.0; /* total |dx|+|dy| since press, for
+                                        tap-vs-drag on the trackpad */
+static guint pending_tap_click_timer = 0; /* nonzero while a single tap
+                                              is waiting to see if a
+                                              second tap upgrades it to
+                                              a double-click */
 static GtkWidget *companion_window; /* set in main(), used by touch indicator */
 
 /* ---- Touch feedback: gray circle flashes wherever the user touches ---- */
@@ -375,17 +381,51 @@ static GtkWidget *build_keyboard_panel(void) {
 
 /* ---- Trackpad panel ---- */
 
+#define TAP_MAX_MOVE_PX 12.0 /* stay under this total movement to count
+                                 as a tap rather than a drag */
+#define DOUBLE_TAP_WINDOW_MS 400 /* real wall-clock gap we treat as
+                                     "the same double-tap gesture";
+                                     unrelated to mini vMac's own -dct,
+                                     which send_click_burst(2) already
+                                     handles with correct internal
+                                     spacing regardless of how far apart
+                                     the two real taps were */
+
+static gboolean fire_pending_tap_click(gpointer data) {
+	(void)data;
+	pending_tap_click_timer = 0;
+	send_click_burst(1);
+	return FALSE; /* one-shot */
+}
+
 static gboolean on_pad_button_press(GtkWidget *w, GdkEventButton *ev, gpointer d) {
 	(void)w; (void)d;
 	trackpad_dragging = TRUE;
 	trackpad_last_x = ev->x;
 	trackpad_last_y = ev->y;
+	tap_move_accum = 0.0;
 	return TRUE;
 }
 
 static gboolean on_pad_button_release(GtkWidget *w, GdkEventButton *ev, gpointer d) {
 	(void)w; (void)ev; (void)d;
 	trackpad_dragging = FALSE;
+	if (tap_move_accum > TAP_MAX_MOVE_PX) {
+		return TRUE; /* real drag -- just repositioned the cursor */
+	}
+	if (pending_tap_click_timer != 0) {
+		/* a first tap is already waiting to resolve -- this is its
+		 * second tap, so upgrade to a real double-click instead of
+		 * two separate single clicks. */
+		g_source_remove(pending_tap_click_timer);
+		pending_tap_click_timer = 0;
+		send_click_burst(2);
+	} else {
+		/* wait briefly to see if a second tap follows before
+		 * committing to a single click. */
+		pending_tap_click_timer = g_timeout_add(
+			DOUBLE_TAP_WINDOW_MS, fire_pending_tap_click, NULL);
+	}
 	return TRUE;
 }
 
@@ -397,6 +437,7 @@ static gboolean on_pad_motion(GtkWidget *w, GdkEventMotion *ev, gpointer d) {
 	trackpad_last_x = ev->x;
 	trackpad_last_y = ev->y;
 	if (dx == 0.0 && dy == 0.0) return TRUE;
+	tap_move_accum += (dx < 0.0 ? -dx : dx) + (dy < 0.0 ? -dy : dy);
 
 	/* Make sure minivmac_w/h are current before clamping. */
 	(void)minivmac();
