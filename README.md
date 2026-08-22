@@ -109,10 +109,9 @@ end). Not prioritized against each other yet.
   sleep/wake (`preventScreenSaver`) vs. actual `poweroff`/reboot
   (different risk profile; a reboot wipes screensaver/resleep-timer
   state, confirmed live this session)
-- On-screen keyboard (kterm reuse, separate-process architecture --
-  mini vMac is GPLv2-only, kterm is GPLv3, incompatible to combine into
-  one binary, so this has to be two processes talking over X11) -- the
-  one still-unstarted phase from the original plan
+- ~~On-screen keyboard (kterm reuse, separate-process architecture)~~ --
+  done, but built as an original standalone app instead of reusing kterm.
+  See `wario-companion` below.
 
 **Mac-side usability**
 - Silence the ALSA "cannot open audio device" spam in the logs -- either
@@ -136,7 +135,14 @@ end). Not prioritized against each other yet.
 
 **Bigger/deferred**
 - E-ink refresh quality pass -- dirty-rect tuning, ghosting, waveform
-  choice, once there's an actual interactive session to judge it against
+  choice. No longer purely theoretical: live-tested 2026-08-22 (see
+  `wario-companion` below) and the mini vMac cursor visibly disappeared
+  or failed to reappear after trackpad-driven motion, despite the
+  underlying event delivery being confirmed correct end-to-end. Strong
+  suspect is the EPDC driver's partial-refresh/damage-coalescing logic
+  dropping a cursor-sized dirty rect as too small to bother committing a
+  waveform update for -- needs investigation with this as the concrete
+  reproduction case, not a fresh unknown.
 - Xephyr investigation -- explicitly deferred as "not now" during
   planning; still on the table if a second/third app makes the
   generic-abstraction payoff worth it (nested X server presenting a sane
@@ -144,6 +150,70 @@ end). Not prioritized against each other yet.
   8-bit StaticGray display)
 - More classic Mac software to try beyond System 6.0.8 (games, apps) --
   pure fun factor
+
+## wario-companion: keyboard/trackpad window (2026-08-22)
+
+A separate, original GTK2 app (`wario-companion/companion.c`, MIT
+license) providing an on-screen QWERTY keyboard and a relative-motion
+trackpad, in one window with one mode-toggle button. Not a kterm/
+matchbox-keyboard reuse -- see the file's own header comment for the
+GPL-compatibility reasoning. Delivers input to mini vMac via
+`XSendEvent` aimed directly at its window (found by title substring
+match), not XTest -- mini vMac's event loop checks `event->window`
+explicitly and never inspects `send_event`, so a correctly-addressed
+synthetic event is indistinguishable from a real one to it.
+
+### The real bug: not focus, not Z-order, not injection method
+
+Companion's window was invisible on launch. Chased this down several
+wrong paths before finding the real cause in `/var/log/messages` on the
+device itself:
+
+1. Tried `XRaiseWindow` -- silently ignored.
+2. Tried the standard EWMH `_NET_ACTIVE_WINDOW` ClientMessage, mirroring
+   what mini vMac's own (dormant, drag-drop-only) `MyActivateWind` does
+   -- also silently ignored.
+3. Read `/etc/xdg/awesome/lab126_button_handling.lua` and
+   `lab126LayerLogic.lua`: lab126's WM grants focus/Z-order only via
+   `setFocusedClient(c)`, called from a real `Button1Down` event under
+   the tap point. Tried a synthetic self-tap via `XTestFakeButtonEvent`
+   -- added a diagnostic `button-press-event` handler on the window
+   itself and confirmed the event **never arrived at any X client**,
+   despite every XTest call reporting protocol-level success. This
+   device's real touch path is the XInput2 `multitouch` driver over
+   evdev, not the legacy core pointer XTest targets.
+4. Switched the self-tap to `kindle-touch` (this project's own evdev
+   injection tool, proven all session for mini vMac itself) -- still no
+   visible change.
+5. Read `lab126_application_layer.lua`'s `applicationLayer_layout`:
+   **every newly-added `N:application` window is already auto-focused**
+   (`if action == "added" then setFocusedClient(updatedWindow.c) end`)
+   -- no self-tap should ever have been necessary in the first place.
+6. Checked `/var/log/messages` directly and found the real answer:
+   `WindowManager:bad-client-name ... window does not conform to winmgr
+   naming convention - leaving hidden`. The window was never unfocused
+   or mis-stacked -- it was **hidden by the WM the entire time**.
+
+Root cause: the title format uses `_` as the field separator
+(`L:A_N:application_ID:..._M:false_...`), and the app ID value
+(`net.gryphel.wario_companion`) contained its own underscore, corrupting
+the WM's field parser. mini vMac's ID (`net.gryphel.minivmac`) has none,
+which is why it never hit this. Fixed by dropping the underscore
+(`wariocompanion`) -- the window appeared immediately, auto-focused, with
+zero raise/activate/self-tap code needed. All four other mechanisms
+tried were real dead ends, not partial progress; removed entirely rather
+than left in as defensive dead code.
+
+### Verified on real hardware
+
+- Companion window appears on top and focused on launch (screenshot).
+- Mode toggle switches between keyboard and trackpad panels (screenshot).
+- Trackpad press/motion/release fire correctly, compute the right
+  relative delta, resolve to mini vMac's actual window ID, and clamp
+  correctly against its real dimensions (confirmed via temporary
+  instrumentation, since removed).
+- Not verified: the moved cursor being visibly redrawn on mini vMac's
+  side -- see the sharpened e-ink refresh backlog item above.
 
 ## Investigated and shelved: Einstein (Newton emulator) port (2026-08-21)
 
