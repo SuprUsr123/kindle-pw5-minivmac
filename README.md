@@ -4,6 +4,8 @@
 first-generation Kindle Oasis, with direct touchscreen input, an on-screen
 keyboard and trackpad, and MacPaint and MacWrite attached at launch.**
 
+![Mini vMac running MacPaint on a physical Kindle Oasis, docked keyboard/trackpad visible below the emulated Mac Plus display](docs/images/kindle-oasis-macpaint.webp)
+
 The emulator runs directly on stock KindleOS—no chroot at runtime—and renders
 a 2x-scaled Mac Plus display onto the Oasis's unusual 8-bit StaticGray X11
 screen. A separate GTK2 companion window docks beneath the emulated display
