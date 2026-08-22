@@ -1,24 +1,85 @@
-# wario
+# Mini vMac for Kindle Oasis
 
-Fun-Friday e-ink hacking on Ryan's jailbroken Kindle Oasis 1st gen. Named
-after the board itself — `/proc/cpuinfo` on the device reports
+**A working Mini vMac port running System 6.0.8 natively on a jailbroken
+first-generation Kindle Oasis, with direct touchscreen input, an on-screen
+keyboard and trackpad, and MacPaint and MacWrite attached at launch.**
+
+The emulator runs directly on stock KindleOS—no chroot at runtime—and renders
+a 2x-scaled Mac Plus display onto the Oasis's unusual 8-bit StaticGray X11
+screen. A separate GTK2 companion window docks beneath the emulated display
+and supplies the controls that make classic Mac software usable on a
+touchscreen.
+
+`wario` is Amazon/lab126's codename for this Kindle hardware board, not a
+reference to the Nintendo character: `/proc/cpuinfo` reports
 `Hardware: Freescale i.MX 6SoloLite based Wario Board`.
 
-Started as a "could Bandar Labs' [Cobalt](https://bandarlabs.github.io/Cobalt/)
-(a Rust SDK/app-platform for Kobo e-readers) work here in spirit?" question.
-Cobalt hard-gates on exact Kobo Clara BW (N365) hardware by design and hooks
-Kobo's Nickel launcher — none of that applies to a lab126/KindleOS device, and
-nothing here shares code with it. What's genuinely borrowed is just the
-*shape* of the idea (a small native app talking to a capability-scoped HAL)
-applied to the Oasis's real jailbreak stack (WinterBreak + KUAL + the
-on-device Alpine armv7 chroot), documented in the `Kindle Oasis (Jailbroken)`
-nelson-wiki page.
+## What works
 
-## Status: pre-work — ABI verification only
+- System 6.0.8 boots and runs at 2x scale on the real e-ink panel.
+- MacPaint and MacWrite floppy images mount automatically alongside the
+  startup disk.
+- Direct screen touches support pen-style clicking and dragging, with a
+  toggleable cursor-nudge mode.
+- The docked companion provides a QWERTY keyboard, relative trackpad,
+  tap-to-click, double-click, triple-click, and explicit mouse-down/up.
+- Mini vMac continues running while the companion owns X input focus.
+- Native hard-float Rust and glibc C binaries have both been verified on the
+  device.
 
-Before sinking time into an SDK, checked the one hard blocker that would sink
-the whole idea: does a normal Rust cross-compiled binary even run on this
-hardware?
+This is an owner-operated hardware-hacking prototype, verified end to end on
+an Oasis 1st gen. It is not yet packaged as a KUAL extension, and the build
+still depends on a locally extracted Oasis sysroot and generated Mini vMac
+configuration.
+
+## Launching on the Kindle
+
+The standard launcher expects these files in `/mnt/us`:
+
+```text
+minivmac
+wario-companion
+system608.img
+macpaint.img
+macwrite.dsk
+launch-wario.sh
+```
+
+Deploy the launcher, then run it over SSH:
+
+```sh
+scp wario-companion/launch-wario.sh kindle-ts:/mnt/us/
+ssh kindle-ts 'chmod +x /mnt/us/launch-wario.sh && /mnt/us/launch-wario.sh'
+```
+
+The launcher sets `DISPLAY=:0`, starts Mini vMac with all three disks, and
+docks the companion underneath it. ROM and disk images are not included in
+this repository.
+
+## Repository layout
+
+- `minivmac-src/` — Mini vMac 36.04 plus the Kindle X11/input adaptations.
+- `wario-companion/` — GTK2 keyboard, trackpad, pen-mode engine, and launcher.
+- `kindle-touch/` — small native evdev touch-injection utility.
+- `cross-bin/` — wrappers for the Oasis glibc cross-toolchain and sysroot.
+- `abi-probe/`, `hello-c/` — the original ABI verification programs.
+- `oasis-hello/`, `wario-sdk/` — the earlier native Rust rendering experiment.
+
+## Development notebook
+
+This began as a two-day Fun-Friday investigation into whether the Oasis could
+support native applications in the spirit of Bandar Labs'
+[Cobalt](https://bandarlabs.github.io/Cobalt/) for Kobo readers. Cobalt itself
+is Kobo-specific and no code is shared; the useful inspiration was the shape
+of a small native application over a hardware-specific layer.
+
+The notes below preserve the actual investigation: hypotheses, dead ends,
+on-device measurements, fixes, and verification.
+
+### ABI verification
+
+Before sinking time into an SDK, the first question was whether a normal Rust
+cross-compiled binary could run on this hardware at all.
 
 ### Finding: yes. Standard `armv7-unknown-linux-musleabihf` (hardfloat) works.
 
