@@ -1,0 +1,6 @@
+#!/bin/bash
+# Mirrors cross-bin/gcc: derives sysroot from script location, not hardcoded.
+# WARIO_SYSROOT overrides if set.
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SYSROOT="${WARIO_SYSROOT:-$SELF_DIR/../oasis-sysroot}"
+exec /opt/homebrew/opt/arm-unknown-linux-gnueabi/bin/arm-unknown-linux-gnueabi-g++ --sysroot="$SYSROOT" "$@"
