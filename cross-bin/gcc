@@ -1,2 +1,7 @@
 #!/bin/bash
-exec /opt/homebrew/opt/arm-unknown-linux-gnueabi/bin/arm-unknown-linux-gnueabi-gcc --sysroot="/Volumes/T9/ryan-homedir/devel/wario/oasis-sysroot" "$@"
+# Derives the repo root from this script's own location instead of a
+# hardcoded checkout path, so this works regardless of where the repo
+# is cloned. WARIO_SYSROOT overrides if set.
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SYSROOT="${WARIO_SYSROOT:-$SELF_DIR/../oasis-sysroot}"
+exec /opt/homebrew/opt/arm-unknown-linux-gnueabi/bin/arm-unknown-linux-gnueabi-gcc --sysroot="$SYSROOT" "$@"
