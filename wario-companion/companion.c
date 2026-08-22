@@ -75,6 +75,18 @@ static guint pending_tap_click_timer = 0; /* nonzero while a single tap
                                               is waiting to see if a
                                               second tap upgrades it to
                                               a double-click */
+static int pending_tap_x, pending_tap_y; /* cursor position AT THE TIME
+                                             of that tap -- the deferred
+                                             click must land here, not
+                                             wherever virt_x/virt_y have
+                                             since drifted to (see
+                                             on_pad_button_release) */
+static gboolean drag_committed = FALSE; /* this touch already crossed
+                                            TAP_MAX_MOVE_PX while still
+                                            held, so it's a real click-
+                                            and-drag (button down since
+                                            the moment it committed),
+                                            not a plain cursor move */
 static GtkWidget *companion_window; /* set in main(), used by touch indicator */
 
 /* ---- Touch feedback: gray circle flashes wherever the user touches ---- */
@@ -252,7 +264,7 @@ static void send_key_tap_shifted(KeySym ks) {
 	XFlush(xdpy);
 }
 
-static void send_button(gboolean press) {
+static void send_button_at(gboolean press, int x, int y) {
 	Window target = minivmac();
 	if (target == None) return;
 	XEvent ev;
@@ -263,12 +275,16 @@ static void send_button(gboolean press) {
 	ev.xbutton.root = DefaultRootWindow(xdpy);
 	ev.xbutton.subwindow = None;
 	ev.xbutton.time = CurrentTime;
-	ev.xbutton.x = virt_x; ev.xbutton.y = virt_y;
+	ev.xbutton.x = x; ev.xbutton.y = y;
 	ev.xbutton.same_screen = True;
 	ev.xbutton.button = Button1;
 	ev.xbutton.state = press ? 0 : Button1Mask;
 	XSendEvent(xdpy, target, False, NoEventMask, &ev);
 	XFlush(xdpy);
+}
+
+static void send_button(gboolean press) {
+	send_button_at(press, virt_x, virt_y);
 }
 
 static void send_motion(void) {
@@ -289,17 +305,26 @@ static void send_motion(void) {
 	XFlush(xdpy);
 }
 
-static void send_click_burst(int n) {
+/* Positional variant used by the trackpad's deferred tap-click timer
+ * (see on_pad_button_release): the click must land where the ORIGINAL
+ * tap happened, not wherever virt_x/virt_y have drifted to by the time
+ * the timer fires -- see the fix's own comment there for why this
+ * matters. */
+static void send_click_burst_at(int n, int x, int y) {
 	for (int i = 0; i < n; ++i) {
-		send_button(TRUE);
+		send_button_at(TRUE, x, y);
 		g_usleep(KEY_HOLD_US); /* same drain-before-CPU-step issue as
 		                          send_key_tap -- see its comment */
-		send_button(FALSE);
+		send_button_at(FALSE, x, y);
 		if (i + 1 < n) {
 			g_usleep(80000); /* comfortably inside mini vMac's
 			                     double-click window (-dct default) */
 		}
 	}
+}
+
+static void send_click_burst(int n) {
+	send_click_burst_at(n, virt_x, virt_y);
 }
 
 /* ---- Keyboard panel ---- */
@@ -394,7 +419,13 @@ static GtkWidget *build_keyboard_panel(void) {
 static gboolean fire_pending_tap_click(gpointer data) {
 	(void)data;
 	pending_tap_click_timer = 0;
-	send_click_burst(1);
+	/* Position captured at tap time, NOT live virt_x/virt_y -- if a
+	 * later, unrelated drag has since moved the cursor mid-stroke
+	 * (e.g. drawing in MacPaint), firing at the CURRENT position would
+	 * inject a stray click into the middle of that drag, ending it
+	 * with an unwanted button-up. Ryan hit exactly this: "clicks and
+	 * drags draw for a fixed amount of time, then are mouseup'd." */
+	send_click_burst_at(1, pending_tap_x, pending_tap_y);
 	return FALSE; /* one-shot */
 }
 
@@ -404,15 +435,21 @@ static gboolean on_pad_button_press(GtkWidget *w, GdkEventButton *ev, gpointer d
 	trackpad_last_x = ev->x;
 	trackpad_last_y = ev->y;
 	tap_move_accum = 0.0;
+	drag_committed = FALSE;
 	return TRUE;
 }
 
 static gboolean on_pad_button_release(GtkWidget *w, GdkEventButton *ev, gpointer d) {
 	(void)w; (void)ev; (void)d;
 	trackpad_dragging = FALSE;
-	if (tap_move_accum > TAP_MAX_MOVE_PX) {
-		return TRUE; /* real drag -- just repositioned the cursor */
+	if (drag_committed) {
+		/* This touch crossed the movement threshold while still held,
+		 * so it's a real click-and-drag (see on_pad_motion) -- release
+		 * the button we've been holding since it committed. */
+		send_button(FALSE);
+		return TRUE;
 	}
+	/* Never crossed the threshold: a plain tap. */
 	if (pending_tap_click_timer != 0) {
 		/* a first tap is already waiting to resolve -- this is its
 		 * second tap, so upgrade to a real double-click instead of
@@ -422,7 +459,10 @@ static gboolean on_pad_button_release(GtkWidget *w, GdkEventButton *ev, gpointer
 		send_click_burst(2);
 	} else {
 		/* wait briefly to see if a second tap follows before
-		 * committing to a single click. */
+		 * committing to a single click. Capture position NOW --
+		 * see fire_pending_tap_click for why. */
+		pending_tap_x = virt_x;
+		pending_tap_y = virt_y;
 		pending_tap_click_timer = g_timeout_add(
 			DOUBLE_TAP_WINDOW_MS, fire_pending_tap_click, NULL);
 	}
@@ -447,6 +487,17 @@ static gboolean on_pad_motion(GtkWidget *w, GdkEventMotion *ev, gpointer d) {
 	if (virt_y < 0) virt_y = 0;
 	if (virt_x >= minivmac_w) virt_x = minivmac_w - 1;
 	if (virt_y >= minivmac_h) virt_y = minivmac_h - 1;
+
+	if (!drag_committed && tap_move_accum > TAP_MAX_MOVE_PX) {
+		/* Real movement while still held -- this is a tap-and-drag,
+		 * not a plain cursor reposition. Press down now, at the
+		 * current (post-motion) position; the button stays down
+		 * through every subsequent motion event until release, so
+		 * e.g. MacPaint draws a continuous line following the drag
+		 * instead of just moving the cursor with the pen up. */
+		drag_committed = TRUE;
+		send_button(TRUE);
+	}
 	send_motion();
 	return TRUE;
 }
