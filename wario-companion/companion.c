@@ -403,6 +403,31 @@ static void send_click_burst(int n) {
 static int touch_evdev_fd = -1;
 static int touch_cur_x = -1, touch_cur_y = -1;
 static gboolean touch_press_sent = FALSE;
+static gboolean touch_down_pending = FALSE; /* BTN_TOUCH=1 seen, but not
+                                                yet decided whether to
+                                                send a press -- deferred
+                                                to the next SYN_REPORT
+                                                since real hardware
+                                                reports BTN_TOUCH BEFORE
+                                                the touch's own position
+                                                (confirmed live: the
+                                                opposite order from
+                                                kindle-touch's synthetic
+                                                sequence, which is why
+                                                scripted testing never
+                                                caught this -- deciding
+                                                at BTN_TOUCH=1 itself
+                                                used stale/uninitialized
+                                                position and silently
+                                                never sent a press at
+                                                all, so the touch-up
+                                                had nothing to release
+                                                either, leaving mini
+                                                vMac's button state
+                                                stuck down across
+                                                strokes -- Ryan's "two
+                                                circles joined by a
+                                                straight line" bug). */
 
 static gboolean on_touch_evdev_event(GIOChannel *source, GIOCondition condition,
 	gpointer data)
@@ -417,6 +442,16 @@ static gboolean on_touch_evdev_event(GIOChannel *source, GIOCondition condition,
 			touch_cur_y = ev.value;
 		} else if (ev.type == EV_KEY && ev.code == BTN_TOUCH) {
 			if (ev.value == 1) {
+				touch_down_pending = TRUE;
+			} else if (ev.value == 0) {
+				touch_down_pending = FALSE;
+				if (touch_press_sent) {
+					send_button_at(FALSE, touch_cur_x, touch_cur_y);
+					touch_press_sent = FALSE;
+				}
+			}
+		} else if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
+			if (touch_down_pending) {
 				Window target = minivmac();
 				if (pen_mode_active && target != None &&
 					touch_cur_x >= 0 && touch_cur_y >= 0 &&
@@ -425,11 +460,7 @@ static gboolean on_touch_evdev_event(GIOChannel *source, GIOCondition condition,
 					send_button_at(TRUE, touch_cur_x, touch_cur_y);
 					touch_press_sent = TRUE;
 				}
-			} else if (ev.value == 0) {
-				if (touch_press_sent) {
-					send_button_at(FALSE, touch_cur_x, touch_cur_y);
-					touch_press_sent = FALSE;
-				}
+				touch_down_pending = FALSE;
 			}
 		}
 	}
