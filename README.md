@@ -368,6 +368,53 @@ the project's documented architecture and Ryan's live device specs, not a
 direct timing measurement. If this ever gets revisited, that's the first
 thing to actually do rather than reason about further.
 
+### Update (2026-08-22): actually attempted, builds and runs, blocked on visual/depth mismatch
+
+Ryan asked to actually try the cross-compile rather than stop at the
+feasibility read. Full writeup, toolchain, and patches are in
+`~/devel/einstein-newton-emu/` (separate git repos: the top-level dir
+for the cross-compile toolchain, `src/` for the Einstein fork itself —
+see both commit messages for complete detail). Summary:
+
+- **Built clean**: FLTK 1.4.4, newt64, a from-source cross-build of
+  libffi 3.4.6 (Einstein's own bundled `libffi-armlinux/` turned out to
+  be built for an incompatible EABI version), and Einstein itself, all
+  targeting arm-unknown-linux-gnueabi/EABI5 against oasis-sysroot.
+- **Genuinely new territory vs. the wario port**: this is Einstein's
+  first C++ build on this toolchain/sysroot combination (wario is all
+  C). Surfaced a real ~10-year gap between the Homebrew cross
+  toolchain's assumptions (GCC 15.2, glibc ≥2.25/2.38-era libstdc++ and
+  libc) and the device's actual userland (glibc 2.20 from 2014, kernel
+  3.0.35-lab126) — getentropy, strlcpy/strlcat, `fcntl64`, and a broken
+  `libpthread.so` linker script all needed compat shims. Every shim
+  that could be independently checked was verified running on real
+  hardware before being folded into the toolchain.
+- **Deploys and runs**: the ARM binary launches on the actual Oasis,
+  creates windows, and draws into them (confirmed via `xwininfo`, not
+  assumed).
+- **Doesn't render visibly — root-caused, not a mystery**: this
+  session's own predicted risk (FLTK's X11 backend hitting the same
+  class of depth/visual mismatch mini vMac needed hand-patching for)
+  turned out real, just not where expected. The root window is
+  confirmed `Depth 8, StaticGray` (matches the e-ink hardware) via
+  `xwininfo -root`. A simple hand-written FLTK test window (no images)
+  rendered *correctly* — genuinely refuting part of the original
+  worry. But Einstein's own Settings panel came up `Depth 32,
+  TrueColor` — FLTK silently upgrades to a compositing-capable visual
+  for some windows (likely triggered by an icon/image widget), and the
+  lab126 launcher's custom WM won't composite a window whose visual
+  doesn't match the root's, even with the correct `L:A_N:application_...`
+  WM_NAME tag (which does work — confirmed via `xwininfo`, and is what
+  makes mini vMac and a plain FLTK window visible at all). Matches the
+  `X_PolyFillRectangle`/`X_PolyText16` "BadMatch" protocol errors seen
+  in the log.
+- **Not fixed this session**: needs either forcing FLTK to the root's
+  8-bit StaticGray visual for every window (`Fl::visual()` or similar),
+  or finding and removing whatever in `TFLSettingsUI.fl` triggers the
+  visual upgrade. CPU-speed concern from the original feasibility read
+  is now moot until rendering works at all — never got far enough to
+  measure it.
+
 ## Known unrelated issue found along the way
 
 `~/.config/containers/registries.conf` is corrupted (mangled TOML — looks
