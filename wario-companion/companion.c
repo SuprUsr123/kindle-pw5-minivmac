@@ -374,10 +374,21 @@ int main(int argc, char **argv) {
 	}
 
 	GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-	/* Same lab126 awesome-WM trick as mini vMac -- see OSGLUXWN.c. */
+	/* L:A_N:application (mini vMac's own tag) makes the WM's app-layer
+	 * logic (lab126_application_layer.lua's prv_position_application)
+	 * force EVERY app-layer window to fill the whole available area --
+	 * that's why this used to cover mini vMac entirely regardless of
+	 * the size requested below. L:KB_N:keyboard is a different, real
+	 * WM layer (lab126_keyboard_layer.lua) built for exactly this: it
+	 * anchors the window to the bottom of the screen at full width but
+	 * PRESERVES whatever height the window already has when first
+	 * managed -- unlike the app layer, it never forces full-screen.
+	 * mini vMac's own window is a fixed 1024x684 (2x-scaled 512x342),
+	 * on a 1072x1448 physical panel, leaving ~764px already unused
+	 * below it -- sized to dock in exactly that space, no overlap. */
 	gtk_window_set_title(GTK_WINDOW(window),
-		"L:A_N:application_ID:net.gryphel.wariocompanion_M:false_PC:N_RC:true_O:U");
-	gtk_window_set_default_size(GTK_WINDOW(window), 1024, 700);
+		"L:KB_N:keyboard_ID:net.gryphel.wariocompanion_M:false_PC:N_RC:true_O:U");
+	gtk_window_set_default_size(GTK_WINDOW(window), 1072, 760);
 
 	GtkWidget *vbox = gtk_vbox_new(FALSE, 4);
 	gtk_container_add(GTK_CONTAINER(window), vbox);

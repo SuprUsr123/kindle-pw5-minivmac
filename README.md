@@ -215,6 +215,27 @@ than left in as defensive dead code.
 - Not verified: the moved cursor being visibly redrawn on mini vMac's
   side -- see the sharpened e-ink refresh backlog item above.
 
+### Docked at the bottom, not full-screen (2026-08-22, same day)
+
+Ryan caught that the companion covered the whole screen, hiding mini
+vMac entirely instead of sharing it -- a real usability gap, not
+cosmetic. Root cause: the `L:A_N:application` tag (copied from mini
+vMac) puts a window in the WM's app layer, whose own layout function
+(`lab126_application_layer.lua`'s `prv_position_application`) forcibly
+resizes every window in that layer to fill the whole available area --
+our own requested size was always being overridden, silently.
+
+Fix: retagged as `L:KB_N:keyboard`, a different, real WM layer
+(`lab126_keyboard_layer.lua`, used by the OS's own on-screen keyboards)
+built for exactly this. `prv_position_keyboard` anchors the window to
+the bottom of the screen at full width but preserves whatever height
+the window already has when first managed -- no forced full-screen.
+mini vMac's window is a fixed 1024x684 on a 1072x1448 panel, leaving
+~764px already empty below it; sized the companion to dock in exactly
+that space. Verified live: mini vMac's full desktop (menu bar, icons)
+stays visible above, companion's keyboard sits below with no overlap,
+no `bad-client-name` warnings in `/var/log/messages` for the new tag.
+
 ## Investigated and shelved: Einstein (Newton emulator) port (2026-08-21)
 
 Ryan asked whether [pguyot/Einstein](https://github.com/pguyot/Einstein) (the
