@@ -48,11 +48,30 @@
  * hook, since a normal per-widget signal handler only sees events for
  * that one widget and GTK2 has no compositor/overlay layer to draw a
  * layer above arbitrary children.
+ *
+ * Pen mode: real touches on mini vMac's own screen (see the "Pen mode"
+ * section) don't go through mini vMac's normal ButtonPress/
+ * ButtonRelease path at all -- that path has an unreliable timing quirk
+ * (confirmed: drags get a spurious release ~400ms in, regardless of
+ * the real finger's actual state), so mini vMac now unconditionally
+ * ignores real button events and trusts only synthetic ones. Instead
+ * this reads /dev/input/event4 directly (non-exclusively, in parallel
+ * with the normal X11/Xorg touch pipeline -- Linux evdev supports
+ * multiple concurrent readers), watches BTN_TOUCH transitions, and
+ * sends a clean synthetic ButtonPress on touch-down / ButtonRelease on
+ * touch-up when the touch lands within mini vMac's own screen bounds
+ * and pen mode is on. Real MotionNotify already works fine natively
+ * and is left completely untouched; only the button-state edges are
+ * replaced.
  */
 
 #include <gtk/gtk.h>
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
+#include <linux/input.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
 #include <string.h>
 #include <stdio.h>
 
@@ -342,52 +361,99 @@ static void send_click_burst(int n) {
 
 /* ---- Pen mode: real digitizer touches on mini vMac's own window ----
  *
- * A real finger touching the screen is, at the driver level, already a
- * button-down (that's just what a touch-to-mouse driver does) -- so
- * "pen mode" (drawing: button held while the finger moves) is the
- * default, unmodified behavior already, nothing to build. "Not-pen
- * mode" (nudge the real cursor without clicking/drawing anything)
- * needs mini vMac itself to selectively ignore real ButtonPress/
- * ButtonRelease while still processing MotionNotify normally --
- * companion alone can't do this by intercepting X11 events in front of
- * mini vMac's window.
+ * Ryan's spec: touching mini vMac's own screen area with pen mode on
+ * IS a mouse-down, for as long as the touch lasts -- mouse-down on
+ * touch, mouse-up on un-touch, full stop. With it off, the same
+ * touches just nudge the cursor.
  *
- * First attempt was XGrabButton(minivmac_window, owner_events=False)
- * to redirect events to us and re-synthesize motion-only ones. That
- * crashed outright: BadAccess (request_code 28 = X_GrabButton) --
+ * First attempt relied on mini vMac's own native touch-to-mouse
+ * translation (i.e. did nothing extra for "pen mode on" beyond passing
+ * events through) plus XGrabButton to swallow button state for "off".
+ * That crashed outright: BadAccess (request_code 28 = X_GrabButton) --
  * lab126's awesome WM almost certainly already holds its own grab on
- * this window for its tap-to-focus mechanism
- * (lab126_button_handling.lua), so a second app-level grab on the same
- * button/window conflicts. Also surfaced a real gotcha worth keeping
- * in mind: GDK's default X error handler is fatal for ANY error on ANY
- * connection in the process, including this second xdpy connection --
- * one bad request took the whole app down.
+ * this window for tap-to-focus (lab126_button_handling.lua), so a
+ * second app-level grab on the same button/window conflicts. It also
+ * turned out the native translation's own button-release timing is
+ * unreliable regardless: real drags on mini vMac's screen got a
+ * spurious release ~400ms in no matter what, since pen mode was pure
+ * passthrough and never touched that path at all.
  *
- * Fixed by moving the logic into mini vMac's own source instead (see
- * PenModeOff in OSGLUXWN.c): a ClientMessage on a custom
- * _WARIO_PEN_MODE atom toggles it. mini vMac already gates that flag
- * on event->xany.send_event being False (a REAL event, not one of
- * OUR XSendEvent-synthesized ones), so this affects only real touches
- * on its own screen -- companion's own tap-to-click/mouse-down/up
- * controls are completely unaffected either way. */
+ * Fixed properly: don't trust the native touch-to-mouse translation's
+ * button-state timing at all, in either mode. mini vMac's own
+ * ButtonPress/ButtonRelease case now unconditionally ignores every
+ * real (send_event=False) button event and only ever trusts synthetic
+ * ones (see OSGLUXWN.c) -- real MotionNotify is untouched since that
+ * part already worked fine. This reads /dev/input/event4 directly,
+ * non-exclusively (Linux evdev supports multiple concurrent readers;
+ * the normal X11/Xorg touch pipeline keeps running alongside this,
+ * untouched, still driving companion's own widgets and real cursor
+ * motion on mini vMac normally), and watches BTN_TOUCH transitions
+ * directly -- these fire the instant the digitizer reports finger
+ * contact/release, with none of the driver's own gesture-recognition
+ * layered on top. On touch-down, if pen mode is on and the touch is
+ * within mini vMac's screen bounds, sends one synthetic ButtonPress;
+ * on touch-up, if that press was sent, one matching ButtonRelease.
+ * Nothing else -- no click-counting, no double/triple-click logic (Ryan's
+ * point: a direct 1:1 touch-down/touch-up mirror of real mouse
+ * behavior lets mini vMac's own ROM-level click recognition work
+ * naturally off real timing, exactly like it would with a real mouse).
+ */
+
+#define TOUCH_EVENT_DEV "/dev/input/event4"
+static int touch_evdev_fd = -1;
+static int touch_cur_x = -1, touch_cur_y = -1;
+static gboolean touch_press_sent = FALSE;
+
+static gboolean on_touch_evdev_event(GIOChannel *source, GIOCondition condition,
+	gpointer data)
+{
+	(void)source; (void)condition; (void)data;
+	struct input_event ev;
+	ssize_t n;
+	while ((n = read(touch_evdev_fd, &ev, sizeof(ev))) == (ssize_t)sizeof(ev)) {
+		if (ev.type == EV_ABS && ev.code == ABS_MT_POSITION_X) {
+			touch_cur_x = ev.value;
+		} else if (ev.type == EV_ABS && ev.code == ABS_MT_POSITION_Y) {
+			touch_cur_y = ev.value;
+		} else if (ev.type == EV_KEY && ev.code == BTN_TOUCH) {
+			if (ev.value == 1) {
+				Window target = minivmac();
+				if (pen_mode_active && target != None &&
+					touch_cur_x >= 0 && touch_cur_y >= 0 &&
+					touch_cur_x < minivmac_w && touch_cur_y < minivmac_h)
+				{
+					send_button_at(TRUE, touch_cur_x, touch_cur_y);
+					touch_press_sent = TRUE;
+				}
+			} else if (ev.value == 0) {
+				if (touch_press_sent) {
+					send_button_at(FALSE, touch_cur_x, touch_cur_y);
+					touch_press_sent = FALSE;
+				}
+			}
+		}
+	}
+	return TRUE; /* keep watching */
+}
+
+/* Opens the touch device and installs the watch; call once from main()
+ * after the GTK main loop is set up. Non-fatal if it fails -- pen mode
+ * just won't do anything extra, same as before this feature existed. */
+static void pen_mode_engine_start(void) {
+	touch_evdev_fd = open(TOUCH_EVENT_DEV, O_RDONLY | O_NONBLOCK);
+	if (touch_evdev_fd < 0) {
+		fprintf(stderr,
+			"wario-companion: couldn't open %s for pen mode: %s\n",
+			TOUCH_EVENT_DEV, strerror(errno));
+		return;
+	}
+	GIOChannel *chan = g_io_channel_unix_new(touch_evdev_fd);
+	g_io_add_watch(chan, G_IO_IN, on_touch_evdev_event, NULL);
+}
 
 static void on_toggle_pen_mode(GtkWidget *w, gpointer d) {
 	(void)d;
-	Window target = minivmac();
-	if (target == None) return;
 	pen_mode_active = !pen_mode_active;
-
-	Atom pen_mode_atom = XInternAtom(xdpy, "_WARIO_PEN_MODE", False);
-	XEvent ev;
-	memset(&ev, 0, sizeof(ev));
-	ev.xclient.type = ClientMessage;
-	ev.xclient.window = target;
-	ev.xclient.message_type = pen_mode_atom;
-	ev.xclient.format = 32;
-	ev.xclient.data.l[0] = pen_mode_active ? 1 : 0;
-	XSendEvent(xdpy, target, False, NoEventMask, &ev);
-	XFlush(xdpy);
-
 	gtk_button_set_label(GTK_BUTTON(w),
 		pen_mode_active ? "pen mode: ON" : "pen mode: OFF (nudge only)");
 }
@@ -715,6 +781,7 @@ int main(int argc, char **argv) {
 	/* Must be installed on a real GdkWindow (post-show/realize) since
 	 * touch_indicator_show() draws directly onto it. */
 	gdk_event_handler_set(global_event_snoop, NULL, NULL);
+	pen_mode_engine_start();
 	gtk_main();
 	return 0;
 }

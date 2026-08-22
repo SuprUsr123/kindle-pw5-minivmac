@@ -208,10 +208,6 @@ LOCALPROC WriteDbgAtom(char *s, Atom x)
 /* --- information about the environment --- */
 
 LOCALVAR Atom MyXA_DeleteW = (Atom)0;
-/* Companion-driven pen-mode toggle: not gated behind EnableDragDrop --
- * this needs to exist regardless of that build option. See the
- * ClientMessage handler and PenModeOff below for what it does. */
-LOCALVAR Atom MyXA_WarioPenMode = (Atom)0;
 #if EnableDragDrop
 LOCALVAR Atom MyXA_UriList = (Atom)0;
 LOCALVAR Atom MyXA_DndAware = (Atom)0;
@@ -237,7 +233,6 @@ LOCALVAR Atom MyXA_MinivMac_Clip = (Atom)0;
 LOCALPROC LoadMyXA(void)
 {
 	MyXA_DeleteW = XInternAtom(x_display, "WM_DELETE_WINDOW", False);
-	MyXA_WarioPenMode = XInternAtom(x_display, "_WARIO_PEN_MODE", False);
 #if EnableDragDrop
 	MyXA_UriList = XInternAtom (x_display, "text/uri-list", False);
 	MyXA_DndAware = XInternAtom (x_display, "XdndAware", False);
@@ -3018,20 +3013,6 @@ LOCALPROC HandleClientMessageDndDrop(XEvent *theEvent)
 LOCALVAR blnr CaughtMouse = falseblnr;
 #endif
 
-/* Toggled by wario-companion via a _WARIO_PEN_MODE ClientMessage (see
- * the ClientMessage case below). FALSE (default) = pen mode: a real
- * touch on this window's own screen area sets the mouse button down
- * exactly as it always has (touching a touchscreen digitizer IS
- * pressing). TRUE = not-pen mode: real ButtonPress/ButtonRelease are
- * ignored (never reach MyMouseButtonSet), so a real finger can nudge
- * the cursor via MotionNotify without ever clicking/dragging anything
- * -- gated on event->xany.send_event being False (a REAL event, not
- * one of wario-companion's own XSendEvent-synthesized ones), so
- * companion's own tap-to-click/mouse-down/up controls are completely
- * unaffected either way, matching Ryan's "trackpad works the same as
- * before" requirement. */
-LOCALVAR blnr PenModeOff = falseblnr;
-
 #if MayNotFullScreen
 LOCALVAR int SavedTransH;
 LOCALVAR int SavedTransV;
@@ -3080,7 +3061,19 @@ LOCALPROC HandleTheEvent(XEvent *theEvent)
 				*/
 				MousePositionNotify(
 					theEvent->xbutton.x, theEvent->xbutton.y);
-				if (theEvent->xany.send_event || ! PenModeOff) {
+				/* Real (non-synthetic) button events are always
+				 * ignored -- the native touch-to-mouse driver has an
+				 * unreliable button-release timing quirk (confirmed:
+				 * drags on this window's own screen area get a
+				 * spurious release ~400ms in, regardless of the real
+				 * finger's actual state). wario-companion now owns all
+				 * button-state synthesis for real touches, watching
+				 * raw evdev BTN_TOUCH transitions directly and sending
+				 * clean synthetic (send_event=True) press/release --
+				 * see its "Pen mode" section. Position still updates
+				 * from real events regardless; only the button state
+				 * is gated. */
+				if (theEvent->xany.send_event) {
 					MyMouseButtonSet(trueblnr);
 				}
 			}
@@ -3093,7 +3086,7 @@ LOCALPROC HandleTheEvent(XEvent *theEvent)
 			} else {
 				MousePositionNotify(
 					theEvent->xbutton.x, theEvent->xbutton.y);
-				if (theEvent->xany.send_event || ! PenModeOff) {
+				if (theEvent->xany.send_event) {
 					MyMouseButtonSet(falseblnr);
 				}
 			}
@@ -3303,9 +3296,7 @@ LOCALPROC HandleTheEvent(XEvent *theEvent)
 #endif
 
 #if EnableDragDrop
-				if (theEvent->xclient.message_type == MyXA_WarioPenMode) {
-					PenModeOff = (theEvent->xclient.data.l[0] == 0);
-				} else if (theEvent->xclient.message_type == MyXA_DndEnter) {
+				if (theEvent->xclient.message_type == MyXA_DndEnter) {
 					/* printf("Got XdndEnter\n"); */
 				} else if (theEvent->xclient.message_type ==
 					MyXA_DndLeave)
@@ -3319,10 +3310,6 @@ LOCALPROC HandleTheEvent(XEvent *theEvent)
 					MyXA_DndDrop)
 				{
 					HandleClientMessageDndDrop(theEvent);
-				} else
-#else
-				if (theEvent->xclient.message_type == MyXA_WarioPenMode) {
-					PenModeOff = (theEvent->xclient.data.l[0] == 0);
 				} else
 #endif
 				{
