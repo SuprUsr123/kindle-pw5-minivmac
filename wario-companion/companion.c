@@ -787,8 +787,12 @@ int main(int argc, char **argv) {
 	 * mini vMac's own window is a fixed 1024x684 (2x-scaled 512x342),
 	 * on a 1072x1448 physical panel, leaving ~764px already unused
 	 * below it -- sized to dock in exactly that space, no overlap. */
-	gtk_window_set_title(GTK_WINDOW(window),
-		"L:KB_N:keyboard_ID:net.gryphel.wariocompanion_M:false_PC:N_RC:true_O:U");
+	const char *window_title = getenv("WARIO_WINDOW_TITLE");
+	if (window_title == NULL || window_title[0] == '\0') {
+		window_title =
+			"L:KB_N:keyboard_ID:net.gryphel.wariocompanion_M:false_PC:N_RC:true_O:U";
+	}
+	gtk_window_set_title(GTK_WINDOW(window), window_title);
 	gtk_window_set_default_size(GTK_WINDOW(window), 1072, 760);
 
 	GtkWidget *vbox = gtk_vbox_new(FALSE, 4);
