@@ -9,7 +9,9 @@
 #
 # Deploy: scp to kindle-ts:/mnt/us/launch-wario.sh, chmod +x, run over
 # SSH with DISPLAY=:0 (no chroot, no KUAL wiring yet -- see README's
-# "Operational polish" backlog for that).
+# "Operational polish" backlog for that). On the PW5 the touch node is
+# auto-detected from /proc/bus/input/devices; override with
+# WARIO_TOUCH_DEV=/dev/input/eventN if detection fails.
 
 set -eu
 
@@ -21,6 +23,28 @@ MACPAINT_DISK="$BIN_DIR/macpaint.img"
 MACWRITE_DISK="$BIN_DIR/macwrite.dsk"
 
 export DISPLAY=:0
+
+# mini vMac looks up vMac.ROM relative to its working directory, so run
+# from the deploy dir (the floppy paths below are already absolute).
+cd "$BIN_DIR"
+
+# Auto-detect the touchscreen evdev node (Kindle touch driver reports
+# "pt_mt" with a "perfmgr" handler in /proc/bus/input/devices).
+if [ -z "${WARIO_TOUCH_DEV:-}" ] && [ -r /proc/bus/input/devices ]; then
+	detect() {
+		awk 'BEGIN{RS=""; FS="\n"}
+		     '"$1"' {
+			for (i=1;i<=NF;i++) if ($i ~ /^H: Handlers=/) {
+				if (match($i, /event[0-9]+/))
+					print "/dev/input/" substr($i, RSTART, RLENGTH)
+			}
+		     }' /proc/bus/input/devices | head -n 1
+	}
+	WARIO_TOUCH_DEV=$(detect '/N: Name="pt_mt"/')
+	[ -z "$WARIO_TOUCH_DEV" ] && WARIO_TOUCH_DEV=$(detect '/perfmgr/')
+	export WARIO_TOUCH_DEV
+fi
+export WARIO_TOUCH_DEV=${WARIO_TOUCH_DEV:-/dev/input/event1}
 
 lipc-set-prop -i com.lab126.powerd preventScreenSaver 1
 

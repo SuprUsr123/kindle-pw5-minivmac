@@ -1,2 +1,5 @@
 #!/bin/bash
-exec /opt/homebrew/opt/arm-unknown-linux-gnueabi/bin/arm-unknown-linux-gnueabi-strip "$@"
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+SELF_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+ROOT="$(dirname "$SELF_DIR")"
+exec "/home/suprusr124/kindle-oasis-minivmac/tools/armv7-eabihf--glibc--stable-2024.02-1/bin/arm-buildroot-linux-gnueabihf-strip"  "$@"

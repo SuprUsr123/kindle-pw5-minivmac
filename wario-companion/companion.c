@@ -74,6 +74,7 @@
 #include <errno.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdarg.h>
 
 /* mini vMac's window title always contains this (see OSGLUXWN.c's
  * win_name literal); matched as a substring so we don't depend on the
@@ -84,6 +85,10 @@ static Display *xdpy;
 static Window minivmac_window = None;
 static int minivmac_w = 1024, minivmac_h = 684; /* refreshed on lookup */
 static gboolean caps_on = FALSE;
+static gboolean shift_on = FALSE;
+static gboolean option_on = FALSE;
+static gboolean command_on = FALSE;
+static gboolean control_on = FALSE;
 static GtkWidget *notebook;
 static int virt_x, virt_y; /* software-tracked cursor pos, window-relative */
 static gboolean trackpad_dragging = FALSE;
@@ -99,13 +104,7 @@ static int pending_tap_x, pending_tap_y; /* cursor position AT THE TIME
                                              click must land here, not
                                              wherever virt_x/virt_y have
                                              since drifted to (see
-                                             on_pad_button_release) */
-static gboolean drag_committed = FALSE; /* this touch already crossed
-                                            TAP_MAX_MOVE_PX while still
-                                            held, so it's a real click-
-                                            and-drag (button down since
-                                            the moment it committed),
-                                            not a plain cursor move */
+                                              on_pad_button_release) */
 static GtkWidget *companion_window; /* set in main(), used by touch indicator */
 static gboolean pen_mode_active = TRUE; /* TRUE: real touches on mini
                                             vMac's own screen behave as
@@ -268,33 +267,52 @@ static void send_key(KeyCode kc, gboolean press, unsigned int state) {
  * holds for tens of ms; this holds synthetic ones the same way. */
 #define KEY_HOLD_US 40000
 
-static void send_key_tap(KeySym ks) {
+/* Generalised key tap honouring the latched modifiers (shift/option/
+ * command/control). Modifiers are sent as their own key events before
+ * the main key and released after, exactly like holding them on a real
+ * keyboard -- mini vMac tracks each modifier as its own Mac key, not via
+ * event.state. `shifted` is the keysym produced when shift/caps is on
+ * (e.g. XK_at for XK_2); pass the same value twice for keys with no
+ * shifted form. */
+static void send_key_combo(KeySym base, KeySym shifted) {
+	gboolean sh = shift_on || caps_on;
+	KeySym ks = sh ? shifted : base;
+	KeyCode mods[4];
+	int n = 0;
+	if (sh) mods[n++] = XKeysymToKeycode(xdpy, XK_Shift_L);
+	if (option_on) mods[n++] = XKeysymToKeycode(xdpy, XK_Super_L);
+	if (command_on) mods[n++] = XKeysymToKeycode(xdpy, XK_Meta_L);
+	if (control_on) mods[n++] = XKeysymToKeycode(xdpy, XK_Control_L);
+
+	for (int i = 0; i < n; ++i) { send_key(mods[i], TRUE, 0); XFlush(xdpy); }
+	if (n > 0) g_usleep(KEY_HOLD_US);
+
 	KeyCode kc = XKeysymToKeycode(xdpy, ks);
 	send_key(kc, TRUE, 0);
 	XFlush(xdpy);
 	g_usleep(KEY_HOLD_US);
 	send_key(kc, FALSE, 0);
 	XFlush(xdpy);
+	g_usleep(KEY_HOLD_US);
+
+	for (int i = n - 1; i >= 0; --i) { send_key(mods[i], FALSE, 0); XFlush(xdpy); }
+	if (n > 0) g_usleep(KEY_HOLD_US);
 }
 
-/* Sends a real Shift keydown/up around the letter, matching how a
- * physical keyboard produces uppercase -- mini vMac tracks Shift as
- * its own key, not via event.state. */
-static void send_key_tap_shifted(KeySym ks) {
-	KeyCode shift = XKeysymToKeycode(xdpy, XK_Shift_L);
-	send_key(shift, TRUE, 0);
-	XFlush(xdpy);
-	g_usleep(KEY_HOLD_US);
-	KeyCode kc = XKeysymToKeycode(xdpy, ks);
-	send_key(kc, TRUE, ShiftMask);
-	XFlush(xdpy);
-	g_usleep(KEY_HOLD_US);
-	send_key(kc, FALSE, ShiftMask);
-	XFlush(xdpy);
-	g_usleep(KEY_HOLD_US);
-	send_key(shift, FALSE, 0);
-	XFlush(xdpy);
+/* Latch-toggle for a modifier; a trailing `*` on the label shows it's
+ * latched on. */
+static void toggle_mod(GtkWidget *w, const char *base_label, gboolean *flag) {
+	*flag = !*flag;
+	char buf[32];
+	snprintf(buf, sizeof(buf), "%s%s", base_label, *flag ? "*" : "");
+	gtk_button_set_label(GTK_BUTTON(w), buf);
 }
+
+static void on_shift(GtkWidget *w, gpointer d) { (void)d; toggle_mod(w, "shift", &shift_on); }
+static void on_caps(GtkWidget *w, gpointer d) { (void)d; toggle_mod(w, "caps", &caps_on); }
+static void on_option(GtkWidget *w, gpointer d) { (void)d; toggle_mod(w, "opt", &option_on); }
+static void on_command(GtkWidget *w, gpointer d) { (void)d; toggle_mod(w, "cmd", &command_on); }
+static void on_control(GtkWidget *w, gpointer d) { (void)d; toggle_mod(w, "ctrl", &control_on); }
 
 static void send_button_at(gboolean press, int x, int y) {
 	Window target = minivmac();
@@ -399,7 +417,12 @@ static void send_click_burst(int n) {
  * naturally off real timing, exactly like it would with a real mouse).
  */
 
-#define TOUCH_EVENT_DEV "/dev/input/event4"
+/* Touch event device node. Override with WARIO_TOUCH_DEV env var. */
+#define TOUCH_EVENT_DEV_DEFAULT "/dev/input/event4"
+static const char *get_touch_dev(void) {
+	const char *e = getenv("WARIO_TOUCH_DEV");
+	return e && e[0] ? e : TOUCH_EVENT_DEV_DEFAULT;
+}
 static int touch_evdev_fd = -1;
 static int touch_cur_x = -1, touch_cur_y = -1;
 static gboolean touch_press_sent = FALSE;
@@ -471,11 +494,11 @@ static gboolean on_touch_evdev_event(GIOChannel *source, GIOCondition condition,
  * after the GTK main loop is set up. Non-fatal if it fails -- pen mode
  * just won't do anything extra, same as before this feature existed. */
 static void pen_mode_engine_start(void) {
-	touch_evdev_fd = open(TOUCH_EVENT_DEV, O_RDONLY | O_NONBLOCK);
+	touch_evdev_fd = open(get_touch_dev(), O_RDONLY | O_NONBLOCK);
 	if (touch_evdev_fd < 0) {
 		fprintf(stderr,
 			"wario-companion: couldn't open %s for pen mode: %s\n",
-			TOUCH_EVENT_DEV, strerror(errno));
+			get_touch_dev(), strerror(errno));
 		return;
 	}
 	GIOChannel *chan = g_io_channel_unix_new(touch_evdev_fd);
@@ -491,78 +514,172 @@ static void on_toggle_pen_mode(GtkWidget *w, gpointer d) {
 
 /* ---- Keyboard panel ---- */
 
-static void on_letter(GtkWidget *w, gpointer data) {
-	(void)w;
-	char lower = ((const char *)data)[0];
-	char upper = (lower >= 'a' && lower <= 'z') ? (lower - 32) : lower;
-	if (caps_on) {
-		send_key_tap_shifted(XK_A + (upper - 'A'));
-	} else {
-		send_key_tap(XK_a + (lower - 'a'));
-	}
-}
-
-static void free_label(gpointer data) { g_free(data); }
-
-static void on_space(GtkWidget *w, gpointer d) { (void)w; (void)d; send_key_tap(XK_space); }
-static void on_return(GtkWidget *w, gpointer d) { (void)w; (void)d; send_key_tap(XK_Return); }
-static void on_backspace(GtkWidget *w, gpointer d) { (void)w; (void)d; send_key_tap(XK_BackSpace); }
-static void on_shift(GtkWidget *w, gpointer d) {
-	(void)d;
-	caps_on = !caps_on;
-	gtk_button_set_label(GTK_BUTTON(w), caps_on ? "SHIFT*" : "shift");
-}
-
 static GtkWidget *make_key(const char *label, GCallback cb, gpointer data) {
 	GtkWidget *btn = gtk_button_new_with_label(label);
 	g_signal_connect(btn, "clicked", cb, data);
 	return btn;
 }
 
-/* Like make_key, but takes ownership of a heap-allocated label/data
- * string and frees it when the button is destroyed. */
-static GtkWidget *make_key_owned(char *label, GCallback cb) {
+/* ---- Key symbol handlers ---- */
+
+typedef struct { KeySym base; KeySym shifted; } KeyPair;
+static void on_key_sym(GtkWidget *w, gpointer d) {
+	(void)w; KeyPair *kp = (KeyPair *)d;
+	send_key_combo(kp->base, kp->shifted);
+}
+static GtkWidget *make_key_sym(const char *label, KeySym base, KeySym shifted) {
+	KeyPair *kp = g_new(KeyPair, 1);
+	kp->base = base; kp->shifted = shifted;
 	GtkWidget *btn = gtk_button_new_with_label(label);
-	g_signal_connect_data(btn, "clicked", cb, label, (GClosureNotify)free_label, 0);
+	g_signal_connect_data(btn, "clicked", G_CALLBACK(on_key_sym), kp,
+		(GClosureNotify)g_free, 0);
 	return btn;
 }
+/* Letter key: base lowercase, shifted uppercase (for shift/caps latch). */
+static GtkWidget *make_letter(char lower) {
+	char label[2] = { lower, 0 };
+	return make_key_sym(label, XK_a + (lower - 'a'), XK_A + (lower - 'a'));
+}
 
+/* Common key callbacks (just re-using the generic on_key_sym). */
+#define DEF_KEY(name, label, base, shifted) \
+	static GtkWidget *key_##name(void) { return make_key_sym(label, base, shifted); }
+
+DEF_KEY(esc, "esc", XK_Escape, XK_Escape)
+DEF_KEY(tab, "tab", XK_Tab, XK_Tab)
+DEF_KEY(del, "del", XK_BackSpace, XK_BackSpace)
+DEF_KEY(fwddel, "fwddel", XK_Delete, XK_Delete)
+DEF_KEY(ret, "ret", XK_Return, XK_Return)
+DEF_KEY(space, "space", XK_space, XK_space)
+DEF_KEY(1, "1", XK_1, XK_exclam)
+DEF_KEY(2, "2", XK_2, XK_at)
+DEF_KEY(3, "3", XK_3, XK_numbersign)
+DEF_KEY(4, "4", XK_4, XK_dollar)
+DEF_KEY(5, "5", XK_5, XK_percent)
+DEF_KEY(6, "6", XK_6, XK_asciicircum)
+DEF_KEY(7, "7", XK_7, XK_ampersand)
+DEF_KEY(8, "8", XK_8, XK_asterisk)
+DEF_KEY(9, "9", XK_9, XK_parenleft)
+DEF_KEY(0, "0", XK_0, XK_parenright)
+DEF_KEY(minus, "-", XK_minus, XK_underscore)
+DEF_KEY(equal, "=", XK_equal, XK_plus)
+DEF_KEY(lbrack, "[", XK_bracketleft, XK_braceleft)
+DEF_KEY(rbrack, "]", XK_bracketright, XK_braceright)
+DEF_KEY(bslash, "\\", XK_backslash, XK_bar)
+DEF_KEY(semi, ";", XK_semicolon, XK_colon)
+DEF_KEY(quote, "'", XK_apostrophe, XK_quotedbl)
+DEF_KEY(comma, ",", XK_comma, XK_less)
+DEF_KEY(period, ".", XK_period, XK_greater)
+DEF_KEY(slash, "/", XK_slash, XK_question)
+DEF_KEY(grave, "`", XK_grave, XK_asciitilde)
+DEF_KEY(up, "^", XK_Up, XK_Up)
+DEF_KEY(down, "v", XK_Down, XK_Down)
+DEF_KEY(left, "<", XK_Left, XK_Left)
+DEF_KEY(right, ">", XK_Right, XK_Right)
+DEF_KEY(home, "home", XK_Home, XK_Home)
+DEF_KEY(end, "end", XK_End, XK_End)
+DEF_KEY(pgup, "pg↑", XK_Page_Up, XK_Page_Up)
+DEF_KEY(pgdn, "pg↓", XK_Page_Down, XK_Page_Down)
+DEF_KEY(help, "help", XK_Help, XK_Help)
+DEF_KEY(clear, "clear", XK_Num_Lock, XK_Num_Lock)
+DEF_KEY(f1, "F1", XK_F1, XK_F1)
+DEF_KEY(f2, "F2", XK_F2, XK_F2)
+DEF_KEY(f3, "F3", XK_F3, XK_F3)
+DEF_KEY(f4, "F4", XK_F4, XK_F4)
+DEF_KEY(f5, "F5", XK_F5, XK_F5)
+DEF_KEY(f6, "F6", XK_F6, XK_F6)
+DEF_KEY(f7, "F7", XK_F7, XK_F7)
+DEF_KEY(f8, "F8", XK_F8, XK_F8)
+DEF_KEY(f9, "F9", XK_F9, XK_F9)
+DEF_KEY(f10, "F10", XK_F10, XK_F10)
+DEF_KEY(f11, "F11", XK_F11, XK_F11)
+DEF_KEY(f12, "F12", XK_F12, XK_F12)
+DEF_KEY(kp_add, "+", XK_KP_Add, XK_KP_Add)
+DEF_KEY(kp_sub, "-", XK_KP_Subtract, XK_KP_Subtract)
+DEF_KEY(kp_mul, "*", XK_KP_Multiply, XK_KP_Multiply)
+DEF_KEY(kp_div, "/", XK_KP_Divide, XK_KP_Divide)
+DEF_KEY(kp_ent, "enter", XK_KP_Enter, XK_KP_Enter)
+DEF_KEY(kp_eq, "=", XK_KP_Equal, XK_KP_Equal)
+DEF_KEY(kp_0, "0", XK_KP_0, XK_KP_0)
+DEF_KEY(kp_1, "1", XK_KP_1, XK_KP_1)
+DEF_KEY(kp_2, "2", XK_KP_2, XK_KP_2)
+DEF_KEY(kp_3, "3", XK_KP_3, XK_KP_3)
+DEF_KEY(kp_4, "4", XK_KP_4, XK_KP_4)
+DEF_KEY(kp_5, "5", XK_KP_5, XK_KP_5)
+DEF_KEY(kp_6, "6", XK_KP_6, XK_KP_6)
+DEF_KEY(kp_7, "7", XK_KP_7, XK_KP_7)
+DEF_KEY(kp_8, "8", XK_KP_8, XK_KP_8)
+DEF_KEY(kp_9, "9", XK_KP_9, XK_KP_9)
+DEF_KEY(kp_dec, ".", XK_KP_Decimal, XK_KP_Decimal)
+
+/* Helper: pack a row of buttons into a vbox, returning the hbox. */
+static GtkWidget *key_row(GtkWidget *vbox, GtkWidget *first, ...) {
+	va_list ap;
+	GtkWidget *hbox = gtk_hbox_new(TRUE, 2);
+	if (first) {
+		gtk_box_pack_start(GTK_BOX(hbox), first, TRUE, TRUE, 0);
+		va_start(ap, first);
+		GtkWidget *w;
+		while ((w = va_arg(ap, GtkWidget *)) != NULL)
+			gtk_box_pack_start(GTK_BOX(hbox), w, TRUE, TRUE, 0);
+		va_end(ap);
+	}
+	gtk_box_pack_start(GTK_BOX(vbox), hbox, TRUE, TRUE, 0);
+	return hbox;
+}
+
+/* ---- Keyboard panel: full Macintosh Plus layout ---- */
 static GtkWidget *build_keyboard_panel(void) {
 	GtkWidget *vbox = gtk_vbox_new(TRUE, 2);
-	const char *rows[3] = {
-		"qwertyuiop",
-		"asdfghjkl",
-		"zxcvbnm",
-	};
+	key_row(vbox, key_esc(), key_grave(), key_1(), key_2(), key_3(), key_4(), key_5(),
+		key_6(), key_7(), key_8(), key_9(), key_0(),
+		key_minus(), key_equal(), key_del(), NULL);
+	key_row(vbox, key_tab(),
+		make_letter('q'), make_letter('w'),
+		make_letter('e'), make_letter('r'),
+		make_letter('t'), make_letter('y'),
+		make_letter('u'), make_letter('i'),
+		make_letter('o'), make_letter('p'),
+		key_lbrack(), key_rbrack(), key_bslash(), NULL);
+	key_row(vbox,
+		make_key("caps", G_CALLBACK(on_caps), NULL),
+		make_letter('a'), make_letter('s'),
+		make_letter('d'), make_letter('f'),
+		make_letter('g'), make_letter('h'),
+		make_letter('j'), make_letter('k'),
+		make_letter('l'), key_semi(), key_quote(), key_ret(), NULL);
+	key_row(vbox,
+		make_key("shift", G_CALLBACK(on_shift), NULL),
+		make_letter('z'), make_letter('x'),
+		make_letter('c'), make_letter('v'),
+		make_letter('b'), make_letter('n'),
+		make_letter('m'), key_comma(), key_period(), key_slash(),
+		make_key("shift", G_CALLBACK(on_shift), NULL), NULL);
+	key_row(vbox,
+		make_key("ctrl", G_CALLBACK(on_control), NULL),
+		make_key("opt", G_CALLBACK(on_option), NULL),
+		make_key("cmd", G_CALLBACK(on_command), NULL),
+		key_space(),
+		make_key("cmd", G_CALLBACK(on_command), NULL),
+		make_key("opt", G_CALLBACK(on_option), NULL),
+		make_key("ctrl", G_CALLBACK(on_control), NULL), NULL);
+	key_row(vbox, key_up(), key_left(), key_down(), key_right(),
+		key_home(), key_end(), key_pgup(), key_pgdn(),
+		key_help(), key_fwddel(), NULL);
+	return vbox;
+}
 
-	for (int r = 0; r < 3; ++r) {
-		GtkWidget *hbox = gtk_hbox_new(TRUE, 2);
-		if (r == 2) {
-			gtk_box_pack_start(GTK_BOX(hbox),
-				make_key("shift", G_CALLBACK(on_shift), NULL),
-				TRUE, TRUE, 0);
-		}
-		for (const char *c = rows[r]; *c; ++c) {
-			char *label = g_strdup_printf("%c", *c);
-			gtk_box_pack_start(GTK_BOX(hbox),
-				make_key_owned(label, G_CALLBACK(on_letter)),
-				TRUE, TRUE, 0);
-		}
-		if (r == 2) {
-			gtk_box_pack_start(GTK_BOX(hbox),
-				make_key("<-", G_CALLBACK(on_backspace), NULL),
-				TRUE, TRUE, 0);
-		}
-		gtk_box_pack_start(GTK_BOX(vbox), hbox, TRUE, TRUE, 0);
-	}
-
-	{
-		GtkWidget *hbox = gtk_hbox_new(TRUE, 2);
-		gtk_box_pack_start(GTK_BOX(hbox), make_key("space", G_CALLBACK(on_space), NULL), TRUE, TRUE, 0);
-		gtk_box_pack_start(GTK_BOX(hbox), make_key("return", G_CALLBACK(on_return), NULL), TRUE, TRUE, 0);
-		gtk_box_pack_start(GTK_BOX(vbox), hbox, TRUE, TRUE, 0);
-	}
-
+/* ---- Keypad / function-key panel ---- */
+static GtkWidget *build_keypad_panel(void) {
+	GtkWidget *vbox = gtk_vbox_new(TRUE, 2);
+	key_row(vbox, key_f1(), key_f2(), key_f3(), key_f4(),
+		key_f5(), key_f6(), key_f7(), key_f8(),
+		key_f9(), key_f10(), key_f11(), key_f12(), NULL);
+	key_row(vbox, key_clear(), key_kp_div(), key_kp_mul(), key_kp_sub(), key_kp_add(), NULL);
+	key_row(vbox, key_kp_7(), key_kp_8(), key_kp_9(), key_kp_ent(), NULL);
+	key_row(vbox, key_kp_4(), key_kp_5(), key_kp_6(), key_kp_eq(), NULL);
+	key_row(vbox, key_kp_1(), key_kp_2(), key_kp_3(), NULL);
+	key_row(vbox, key_kp_0(), key_kp_dec(), NULL);
 	return vbox;
 }
 
@@ -573,7 +690,7 @@ static GtkWidget *build_keyboard_panel(void) {
 #define DOUBLE_TAP_WINDOW_MS 400 /* real wall-clock gap we treat as
                                      "the same double-tap gesture";
                                      unrelated to mini vMac's own -dct,
-                                     which send_click_burst(2) already
+                                     which send_click_burst() already
                                      handles with correct internal
                                      spacing regardless of how far apart
                                      the two real taps were */
@@ -581,12 +698,9 @@ static GtkWidget *build_keyboard_panel(void) {
 static gboolean fire_pending_tap_click(gpointer data) {
 	(void)data;
 	pending_tap_click_timer = 0;
-	/* Position captured at tap time, NOT live virt_x/virt_y -- if a
-	 * later, unrelated drag has since moved the cursor mid-stroke
-	 * (e.g. drawing in MacPaint), firing at the CURRENT position would
-	 * inject a stray click into the middle of that drag, ending it
-	 * with an unwanted button-up. Ryan hit exactly this: "clicks and
-	 * drags draw for a fixed amount of time, then are mouseup'd." */
+	/* Single tap with no second tap following within the double-tap
+	 * window: a plain click (select an icon, press a button). Only
+	 * taps that MOVED (drag) are excluded -- see on_pad_button_release. */
 	send_click_burst_at(1, pending_tap_x, pending_tap_y);
 	return FALSE; /* one-shot */
 }
@@ -597,32 +711,29 @@ static gboolean on_pad_button_press(GtkWidget *w, GdkEventButton *ev, gpointer d
 	trackpad_last_x = ev->x;
 	trackpad_last_y = ev->y;
 	tap_move_accum = 0.0;
-	drag_committed = FALSE;
 	return TRUE;
 }
 
 static gboolean on_pad_button_release(GtkWidget *w, GdkEventButton *ev, gpointer d) {
 	(void)w; (void)ev; (void)d;
 	trackpad_dragging = FALSE;
-	if (drag_committed) {
-		/* This touch crossed the movement threshold while still held,
-		 * so it's a real click-and-drag (see on_pad_motion) -- release
-		 * the button we've been holding since it committed. */
-		send_button(FALSE);
+	/* A drag (finger crossed the movement threshold while held) is not
+	 * a tap: on the PW5 the trackpad ONLY moves the cursor, it never
+	 * presses a button, so a dragged stroke sends no click at all. */
+	if (tap_move_accum > TAP_MAX_MOVE_PX) {
 		return TRUE;
 	}
-	/* Never crossed the threshold: a plain tap. */
+	/* Plain tap (finger stayed put): single tap = click, double tap =
+	 * double-click, exactly like a real Mac trackpad. */
 	if (pending_tap_click_timer != 0) {
-		/* a first tap is already waiting to resolve -- this is its
-		 * second tap, so upgrade to a real double-click instead of
-		 * two separate single clicks. */
+		/* a first tap is already waiting -- this is its second tap,
+		 * so it's a double-tap = a double-click (open an icon). */
 		g_source_remove(pending_tap_click_timer);
 		pending_tap_click_timer = 0;
 		send_click_burst(2);
 	} else {
-		/* wait briefly to see if a second tap follows before
-		 * committing to a single click. Capture position NOW --
-		 * see fire_pending_tap_click for why. */
+		/* wait briefly for a possible second tap before committing
+		 * to a single click. */
 		pending_tap_x = virt_x;
 		pending_tap_y = virt_y;
 		pending_tap_click_timer = g_timeout_add(
@@ -650,16 +761,11 @@ static gboolean on_pad_motion(GtkWidget *w, GdkEventMotion *ev, gpointer d) {
 	if (virt_x >= minivmac_w) virt_x = minivmac_w - 1;
 	if (virt_y >= minivmac_h) virt_y = minivmac_h - 1;
 
-	if (!drag_committed && tap_move_accum > TAP_MAX_MOVE_PX) {
-		/* Real movement while still held -- this is a tap-and-drag,
-		 * not a plain cursor reposition. Press down now, at the
-		 * current (post-motion) position; the button stays down
-		 * through every subsequent motion event until release, so
-		 * e.g. MacPaint draws a continuous line following the drag
-		 * instead of just moving the cursor with the pen up. */
-		drag_committed = TRUE;
-		send_button(TRUE);
-	}
+	/* Trackpad drag = cursor move ONLY. No button state is touched
+	 * here -- the button is held only when the user presses the
+	 * mouse-down button (a latch), and released by mouse-up. This is
+	 * what makes it behave like a real trackpad instead of always
+	 * drawing. */
 	send_motion();
 	return TRUE;
 }
@@ -669,6 +775,20 @@ static void on_click2(GtkWidget *w, gpointer d) { (void)w; (void)d; send_click_b
 static void on_click3(GtkWidget *w, gpointer d) { (void)w; (void)d; send_click_burst(3); }
 static void on_mousedown(GtkWidget *w, gpointer d) { (void)w; (void)d; send_button(TRUE); }
 static void on_mouseup(GtkWidget *w, gpointer d) { (void)w; (void)d; send_button(FALSE); }
+
+/* Close button: shut down the whole emulated Mac session -- both the
+ * emulator and this companion. Sends the Mac a "shut down" keystroke
+ * first (Command+Q is too modern for System 6; the Mac Plus power key is
+ * the special keyboard power key, but mini vMac maps the Mac's power key
+ * to F13 on a Mac keyboard -- send a clean shutdown via the Ctrl+Power
+ * hack is unreliable, so just kill the processes: the Mac disk images
+ * are read-only, nothing to save). */
+static void on_close(GtkWidget *w, gpointer d) {
+	(void)w; (void)d;
+	/* Give the emulator a moment to flush, then take everything down. */
+	system("pkill -9 minivmac 2>/dev/null; pkill -9 wario-companion 2>/dev/null; exit 0");
+	gtk_main_quit();
+}
 
 static GtkWidget *build_trackpad_panel(void) {
 	GtkWidget *vbox = gtk_vbox_new(FALSE, 4);
@@ -700,6 +820,7 @@ static GtkWidget *build_trackpad_panel(void) {
 	gtk_box_pack_start(GTK_BOX(hbox), make_key("3-click", G_CALLBACK(on_click3), NULL), TRUE, TRUE, 0);
 	gtk_box_pack_start(GTK_BOX(hbox), make_key("mouse\ndown", G_CALLBACK(on_mousedown), NULL), TRUE, TRUE, 0);
 	gtk_box_pack_start(GTK_BOX(hbox), make_key("mouse\nup", G_CALLBACK(on_mouseup), NULL), TRUE, TRUE, 0);
+	gtk_box_pack_start(GTK_BOX(hbox), make_key("close", G_CALLBACK(on_close), NULL), TRUE, TRUE, 0);
 	gtk_box_pack_start(GTK_BOX(vbox), hbox, FALSE, FALSE, 0);
 
 	return vbox;
@@ -723,6 +844,7 @@ static void clear_container(GtkWidget *container) {
 
 static void show_keyboard_mode_bar(void);
 static void show_trackpad_mode_bar(void);
+static void show_keypad_mode_bar(void);
 
 static void on_switch_to_trackpad(GtkWidget *w, gpointer d) {
 	(void)w; (void)d;
@@ -736,13 +858,31 @@ static void on_switch_to_keyboard(GtkWidget *w, gpointer d) {
 	show_keyboard_mode_bar();
 }
 
-static void show_keyboard_mode_bar(void) {
+static void on_switch_to_keypad(GtkWidget *w, gpointer d) {
+	(void)w; (void)d;
+	gtk_notebook_set_current_page(GTK_NOTEBOOK(notebook), 2);
+	show_keypad_mode_bar();
+}
+
+/* A two-button horizontal bar in mode_bar. */
+static void mode_bar_two(const char *l1, GCallback c1, const char *l2, GCallback c2) {
 	clear_container(mode_bar);
-	GtkWidget *btn = gtk_button_new_with_label("switch to TRACKPAD");
-	gtk_widget_set_size_request(btn, -1, 80);
-	g_signal_connect(btn, "clicked", G_CALLBACK(on_switch_to_trackpad), NULL);
-	gtk_container_add(GTK_CONTAINER(mode_bar), btn);
+	GtkWidget *hbox = gtk_hbox_new(TRUE, 2);
+	GtkWidget *b1 = gtk_button_new_with_label(l1);
+	gtk_widget_set_size_request(b1, -1, 80);
+	g_signal_connect(b1, "clicked", c1, NULL);
+	gtk_box_pack_start(GTK_BOX(hbox), b1, TRUE, TRUE, 0);
+	GtkWidget *b2 = gtk_button_new_with_label(l2);
+	gtk_widget_set_size_request(b2, -1, 80);
+	g_signal_connect(b2, "clicked", c2, NULL);
+	gtk_box_pack_start(GTK_BOX(hbox), b2, TRUE, TRUE, 0);
+	gtk_container_add(GTK_CONTAINER(mode_bar), hbox);
 	gtk_widget_show_all(mode_bar);
+}
+
+static void show_keyboard_mode_bar(void) {
+	mode_bar_two("switch to TRACKPAD", G_CALLBACK(on_switch_to_trackpad),
+		"switch to NUM", G_CALLBACK(on_switch_to_keypad));
 }
 
 static void show_trackpad_mode_bar(void) {
@@ -762,6 +902,11 @@ static void show_trackpad_mode_bar(void) {
 
 	gtk_container_add(GTK_CONTAINER(mode_bar), hbox);
 	gtk_widget_show_all(mode_bar);
+}
+
+static void show_keypad_mode_bar(void) {
+	mode_bar_two("switch to KBD", G_CALLBACK(on_switch_to_keyboard),
+		"switch to TRACKPAD", G_CALLBACK(on_switch_to_trackpad));
 }
 
 int main(int argc, char **argv) {
@@ -785,7 +930,7 @@ int main(int argc, char **argv) {
 	 * PRESERVES whatever height the window already has when first
 	 * managed -- unlike the app layer, it never forces full-screen.
 	 * mini vMac's own window is a fixed 1024x684 (2x-scaled 512x342),
-	 * on a 1072x1448 physical panel, leaving ~764px already unused
+	 * on a 1236x1648 physical panel, leaving ~860px already unused
 	 * below it -- sized to dock in exactly that space, no overlap. */
 	const char *window_title = getenv("WARIO_WINDOW_TITLE");
 	if (window_title == NULL || window_title[0] == '\0') {
@@ -793,7 +938,10 @@ int main(int argc, char **argv) {
 			"L:KB_N:keyboard_ID:net.gryphel.wariocompanion_M:false_PC:N_RC:true_O:U";
 	}
 	gtk_window_set_title(GTK_WINDOW(window), window_title);
-	gtk_window_set_default_size(GTK_WINDOW(window), 1072, 760);
+	/* Height sized so the keyboard layer docks the window right up
+	 * against the bottom of mini vMac's screen (which ends at y=820 on
+	 * the 1648px-tall PW5 panel) -- no dead gap between them. */
+	gtk_window_set_default_size(GTK_WINDOW(window), 1236, 828);
 
 	GtkWidget *vbox = gtk_vbox_new(FALSE, 4);
 	gtk_container_add(GTK_CONTAINER(window), vbox);
@@ -805,6 +953,7 @@ int main(int argc, char **argv) {
 	gtk_notebook_set_show_tabs(GTK_NOTEBOOK(notebook), FALSE);
 	gtk_notebook_append_page(GTK_NOTEBOOK(notebook), build_keyboard_panel(), NULL);
 	gtk_notebook_append_page(GTK_NOTEBOOK(notebook), build_trackpad_panel(), NULL);
+	gtk_notebook_append_page(GTK_NOTEBOOK(notebook), build_keypad_panel(), NULL);
 	gtk_box_pack_start(GTK_BOX(vbox), notebook, TRUE, TRUE, 0);
 
 	show_keyboard_mode_bar(); /* matches default notebook page 0 */

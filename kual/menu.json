@@ -1,0 +1,25 @@
+{
+   "items": [
+        {"name": "Mini vMac",
+        "priority": 0,
+        "items": [
+            {
+                "name": "Launch Mini vMac",
+                "priority": 0,
+                "action": "/bin/sh ./bin/minivmac.sh",
+                "params": "",
+                "exitmenu": true,
+                "status": false
+            },
+            {
+                "name": "Stop Mini vMac",
+                "priority": 0,
+                "action": "/bin/sh ./bin/stop.sh",
+                "params": "",
+                "exitmenu": true,
+                "status": false
+            }
+          ]
+        }
+    ]
+}

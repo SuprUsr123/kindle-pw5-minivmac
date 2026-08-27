@@ -1,6 +1,5 @@
 #!/bin/bash
-# Mirrors cross-bin/gcc: derives sysroot from script location, not hardcoded.
-# WARIO_SYSROOT overrides if set.
-SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SYSROOT="${WARIO_SYSROOT:-$SELF_DIR/../oasis-sysroot}"
-exec /opt/homebrew/opt/arm-unknown-linux-gnueabi/bin/arm-unknown-linux-gnueabi-g++ --sysroot="$SYSROOT" "$@"
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+SELF_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+ROOT="$(dirname "$SELF_DIR")"
+exec "/home/suprusr124/kindle-oasis-minivmac/tools/armv7-eabihf--glibc--stable-2024.02-1/bin/arm-buildroot-linux-gnueabihf-g++" --sysroot=/home/suprusr124/kindle-oasis-minivmac/tools/pw5-build-sysroot "$@"

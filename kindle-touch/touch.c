@@ -33,8 +33,8 @@ static void write_ev(int fd, unsigned short type, unsigned short code, int value
 	struct timespec ts;
 	clock_gettime(CLOCK_REALTIME, &ts);
 	memset(&ev, 0, sizeof(ev));
-	ev.time.tv_sec = ts.tv_sec;
-	ev.time.tv_usec = ts.tv_nsec / 1000;
+	ev.input_event_sec = ts.tv_sec;
+	ev.input_event_usec = ts.tv_nsec / 1000;
 	ev.type = type;
 	ev.code = code;
 	ev.value = value;

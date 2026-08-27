@@ -1158,6 +1158,24 @@ LOCALVAR XImage *my_Scaled_image = NULL;
 #define MaxScale 1
 #endif
 
+/* PW5 display scale: fractional 2.4x (12/5) fills the 1236px-wide panel
+ * where the integer options don't (2x leaves 212px margin, 3x overflows).
+ * The internal ScrnMapr still renders at integer MyWindowScale (2) into
+ * ScalingBuff; StretchScaledRegion() does a nearest-neighbor expansion
+ * to the display size for the window/pixmap/image. */
+#define MyDispScaleNum 12
+#define MyDispScaleDen 5
+#define MyDispScaleMul(v) ((int)(((long)(v) * MyDispScaleNum) / MyDispScaleDen))
+#define MyDispScaleDiv(v) ((int)(((long)(v) * MyDispScaleDen) / MyDispScaleNum))
+#define MyDispScaleDivCeil(v) \
+	((int)(((long)(v) * MyDispScaleDen + MyDispScaleNum - 1) / MyDispScaleNum))
+#define MyDispScrnW (vMacScreenWidth * MyDispScaleNum / MyDispScaleDen)
+#define MyDispScrnH (vMacScreenHeight * MyDispScaleNum / MyDispScaleDen)
+/* Row stride in bytes, rounded up to a multiple of 4 -- XCreateImage
+ * (bitmap_pad=32) rejects misaligned bytes_per_line. */
+#define MyDispScrnWB \
+	((((MyDispScrnW + 7) / 8) + 3) & ~3)
+
 #define WantScalingTabl (EnableMagnify || UseColorImage)
 
 #if WantScalingTabl
@@ -1180,7 +1198,8 @@ LOCALVAR ui3p ScalingTabl = nullpr;
 #if WantScalingBuff
 
 LOCALVAR ui3p ScalingBuff = nullpr;
-
+LOCALVAR ui3p DisplayBuff = nullpr; /* 2.4x display-scaled copy of
+	ScalingBuff, see StretchScaledRegion */
 
 #if UseColorImage
 #define ScalingBuffsz \
@@ -1189,6 +1208,7 @@ LOCALVAR ui3p ScalingBuff = nullpr;
 #define ScalingBuffsz ((long)vMacScreenMonoNumBytes \
 	* MaxScale * MaxScale)
 #endif
+#define DisplayBuffsz ((long)MyDispScrnWB * MyDispScrnH)
 
 #endif /* WantScalingBuff */
 
@@ -1217,6 +1237,37 @@ LOCALPROC SetUpScalingTabl(void)
 					bitsRemaining = 8;
 					t2 = 0;
 				}
+			}
+		}
+	}
+}
+#endif
+
+#if EnableMagnify && ! UseColorImage
+/* Nearest-neighbor stretch of the (integer 2x) ScalingBuff region up to
+ * the fractional 2.4x display size in DisplayBuff. Framebuffer region is
+ * [top..bottom)x[left..right); each display pixel samples the 2x source
+ * at (x * MyWindowScale * MyDispScaleDen / MyDispScaleNum), i.e. x*5/6. */
+LOCALPROC StretchScaledRegion(int top, int left, int bottom, int right)
+{
+	int dispL = MyDispScaleMul(left);
+	int dispT = MyDispScaleMul(top);
+	int dispR = MyDispScaleMul(right);
+	int dispB = MyDispScaleMul(bottom);
+	int inRowBytes = vMacScreenMonoByteWidth * MyWindowScale;
+	int dy;
+	for (dy = dispT; dy < dispB; ++dy) {
+		int sy = dy * MyWindowScale * MyDispScaleDen / MyDispScaleNum;
+		ui3b *src = (ui3b *)ScalingBuff + (long)sy * inRowBytes;
+		ui3b *dst = (ui3b *)DisplayBuff + (long)dy * MyDispScrnWB;
+		int dx;
+		for (dx = dispL; dx < dispR; ++dx) {
+			int sx = dx * MyWindowScale * MyDispScaleDen / MyDispScaleNum;
+			int bit = (src[sx >> 3] >> (7 - (sx & 7))) & 1;
+			if (bit) {
+				dst[dx >> 3] |= (ui3b)(0x80 >> (dx & 7));
+			} else {
+				dst[dx >> 3] &= (ui3b)~(0x80 >> (dx & 7));
 			}
 		}
 	}
@@ -1449,7 +1500,6 @@ LOCALPROC HaveChangedScreenBuff(ui4r top, ui4r left,
 
 	XDest = left;
 	YDest = top;
-
 #if VarFullScreen
 	if (UseFullScreen)
 #endif
@@ -1462,8 +1512,8 @@ LOCALPROC HaveChangedScreenBuff(ui4r top, ui4r left,
 
 #if EnableMagnify
 	if (UseMagnify) {
-		XDest *= MyWindowScale;
-		YDest *= MyWindowScale;
+		XDest = MyDispScaleMul(XDest);
+		YDest = MyDispScaleMul(YDest);
 	}
 #endif
 
@@ -1516,7 +1566,12 @@ LOCALPROC HaveChangedScreenBuff(ui4r top, ui4r left,
 
 		{
 			char *saveData = my_Scaled_image->data;
+#if ! UseColorImage
+			StretchScaledRegion(top, left, bottom, right);
+			my_Scaled_image->data = (char *)DisplayBuff;
+#else
 			my_Scaled_image->data = (char *)ScalingBuff;
+#endif
 
 #if UseColorImage
 			XPutImage(x_display, my_main_wind, my_gc, my_Scaled_image,
@@ -1527,14 +1582,14 @@ LOCALPROC HaveChangedScreenBuff(ui4r top, ui4r left,
 #else
 			/* see comment at mono_pixmap's declaration */
 			XPutImage(x_display, mono_pixmap, mono_gc, my_Scaled_image,
-				left * MyWindowScale, top * MyWindowScale,
-				left * MyWindowScale, top * MyWindowScale,
-				(right - left) * MyWindowScale,
-				(bottom - top) * MyWindowScale);
+				MyDispScaleMul(left), MyDispScaleMul(top),
+				MyDispScaleMul(left), MyDispScaleMul(top),
+				MyDispScaleMul(right - left),
+				MyDispScaleMul(bottom - top));
 			XCopyPlane(x_display, mono_pixmap, my_main_wind, my_gc,
-				left * MyWindowScale, top * MyWindowScale,
-				(right - left) * MyWindowScale,
-				(bottom - top) * MyWindowScale,
+				MyDispScaleMul(left), MyDispScaleMul(top),
+				MyDispScaleMul(right - left),
+				MyDispScaleMul(bottom - top),
 				XDest, YDest, 1);
 #endif
 
@@ -1712,8 +1767,8 @@ LOCALFUNC blnr MyMoveMouse(si4b h, si4b v)
 
 #if EnableMagnify
 	if (UseMagnify) {
-		h *= MyWindowScale;
-		v *= MyWindowScale;
+		h = MyDispScaleMul(h);
+		v = MyDispScaleMul(v);
 	}
 #endif
 
@@ -1814,8 +1869,8 @@ LOCALPROC MousePositionNotify(int NewMousePosh, int NewMousePosv)
 
 #if EnableMagnify
 	if (UseMagnify) {
-		NewMousePosh /= MyWindowScale;
-		NewMousePosv /= MyWindowScale;
+		NewMousePosh = MyDispScaleDiv(NewMousePosh);
+		NewMousePosv = MyDispScaleDiv(NewMousePosv);
 	}
 #endif
 
@@ -3155,10 +3210,10 @@ LOCALPROC HandleTheEvent(XEvent *theEvent)
 
 #if EnableMagnify
 				if (UseMagnify) {
-					x0 /= MyWindowScale;
-					y0 /= MyWindowScale;
-					x1 = (x1 + (MyWindowScale - 1)) / MyWindowScale;
-					y1 = (y1 + (MyWindowScale - 1)) / MyWindowScale;
+					x0 = MyDispScaleDiv(x0);
+					y0 = MyDispScaleDiv(y0);
+					x1 = MyDispScaleDivCeil(x1);
+					y1 = MyDispScaleDivCeil(y1);
 				}
 #endif
 #if VarFullScreen
@@ -3377,6 +3432,8 @@ LOCALFUNC blnr Screen_Init(void)
 	Visual *Xvisual;
 
 	x_display = XOpenDisplay(display_name);
+	fprintf(stderr, "[wario] XOpenDisplay(%s) -> %p\n",
+		display_name, (void *)x_display);
 	if (NULL == x_display) {
 		fprintf(stderr, "Cannot connect to X server.\n");
 		return falseblnr;
@@ -3389,6 +3446,8 @@ LOCALFUNC blnr Screen_Init(void)
 	Xcmap = DefaultColormap(x_display, screen);
 
 	Xvisual = DefaultVisual(x_display, screen);
+	fprintf(stderr, "[wario] DefaultDepth=%d visual_class=%d\n",
+		(int)DefaultDepth(x_display, screen), (int)Xvisual->class);
 
 	LoadMyXA();
 
@@ -3400,9 +3459,12 @@ LOCALFUNC blnr Screen_Init(void)
 	if (! XAllocColor(x_display, Xcmap, &x_white)) {
 		WriteExtraErr("XParseColor white fails");
 	}
+	fprintf(stderr, "[wario] colors allocated black=%lx white=%lx\n",
+		(unsigned long)x_black.pixel, (unsigned long)x_white.pixel);
 	if (! CreateMyBlankCursor(rootwin)) {
 		return falseblnr;
 	}
+	fprintf(stderr, "[wario] blank cursor OK\n");
 
 #if ! UseColorImage
 	my_image = XCreateImage(x_display, Xvisual, 1, XYBitmap, 0,
@@ -3422,6 +3484,7 @@ LOCALFUNC blnr Screen_Init(void)
 
 	my_image->bitmap_bit_order = MSBFirst;
 	my_image->byte_order = MSBFirst;
+	fprintf(stderr, "[wario] mono XCreateImage OK\n");
 #endif
 
 #if UseColorImage
@@ -3463,9 +3526,8 @@ LOCALFUNC blnr Screen_Init(void)
 	my_Scaled_image = XCreateImage(x_display, Xvisual,
 		1, XYBitmap, 0,
 		NULL /* (char *)image_Mem1 */,
-		vMacScreenWidth * MyWindowScale,
-		vMacScreenHeight * MyWindowScale,
-		32, vMacScreenMonoByteWidth * MyWindowScale);
+		MyDispScrnW, MyDispScrnH,
+		32, MyDispScrnWB);
 	if (NULL == my_Scaled_image) {
 		fprintf(stderr, "XCreateImage failed.\n");
 		return falseblnr;
@@ -3566,8 +3628,8 @@ LOCALFUNC blnr CreateMainWindow(void)
 
 #if EnableMagnify
 	if (UseMagnify) {
-		NewWindowHeight *= MyWindowScale;
-		NewWindowWidth *= MyWindowScale;
+		NewWindowHeight = MyDispScrnH;
+		NewWindowWidth = MyDispScrnW;
 	}
 #endif
 
@@ -3591,8 +3653,8 @@ LOCALFUNC blnr CreateMainWindow(void)
 		ViewVSize = hr;
 #if EnableMagnify
 		if (UseMagnify) {
-			ViewHSize /= MyWindowScale;
-			ViewVSize /= MyWindowScale;
+			ViewHSize = MyDispScaleDiv(ViewHSize);
+			ViewVSize = MyDispScaleDiv(ViewVSize);
 		}
 #endif
 		if (ViewHSize >= vMacScreenWidth) {
@@ -3673,6 +3735,8 @@ LOCALFUNC blnr CreateMainWindow(void)
 		WriteExtraErr("XCreateSimpleWindow failed.");
 		return falseblnr;
 	} else {
+		fprintf(stderr, "[wario] window created %lx\n",
+			(unsigned long)my_main_wind);
 		char *win_name =
 			/* lab126's awesome WM (see
 			   /etc/xdg/awesome/lab126LayerLogic.lua) only raises
@@ -3729,6 +3793,7 @@ LOCALFUNC blnr CreateMainWindow(void)
 			WriteExtraErr("XCreateGC failed.");
 			return falseblnr;
 		}
+		fprintf(stderr, "[wario] my_gc OK\n");
 		/* Mac video-RAM bit=1 renders as white through mini vMac's own
 		   scaling/copy buffers on this backend, not black as raw QuickDraw
 		   convention would suggest -- confirmed empirically on real
@@ -3737,25 +3802,20 @@ LOCALFUNC blnr CreateMainWindow(void)
 			GXcopy, AllPlanes);
 
 		mono_pixmap = XCreatePixmap(x_display, my_main_wind,
-			vMacScreenWidth
-#if EnableMagnify
-				* MyWindowScale
-#endif
-			,
-			vMacScreenHeight
-#if EnableMagnify
-				* MyWindowScale
-#endif
-			, 1);
+			(ui5r)(EnableMagnify ? (ui5r)MyDispScrnW : (ui5r)vMacScreenWidth),
+			(ui5r)(EnableMagnify ? (ui5r)MyDispScrnH : (ui5r)vMacScreenHeight),
+			1);
 		if (None == mono_pixmap) {
 			WriteExtraErr("XCreatePixmap failed.");
 			return falseblnr;
 		}
+		fprintf(stderr, "[wario] mono_pixmap OK\n");
 		mono_gc = XCreateGC(x_display, mono_pixmap, 0, NULL);
 		if (NULL == mono_gc) {
 			WriteExtraErr("XCreateGC failed.");
 			return falseblnr;
 		}
+		fprintf(stderr, "[wario] mono_gc OK\n");
 
 #if VarFullScreen
 		if (! UseFullScreen)
@@ -4137,8 +4197,8 @@ LOCALPROC ToggleWantFullScreen(void)
 					XRootWindow(x_display, DefaultScreen(x_display));
 				XGetGeometry(x_display, rootwin,
 					&rr, &xr, &yr, &wr, &hr, &bwr, &dr);
-				if ((wr >= vMacScreenWidth * MyWindowScale)
-					&& (hr >= vMacScreenHeight * MyWindowScale)
+				if ((wr >= (ui5r)MyDispScrnW)
+					&& (hr >= (ui5r)MyDispScrnH)
 					)
 				{
 					WantMagnify = trueblnr;
@@ -4588,6 +4648,8 @@ LOCALPROC ReserveAllocAll(void)
 #if WantScalingBuff
 	ReserveAllocOneBlock(&ScalingBuff,
 		ScalingBuffsz, 5, falseblnr);
+	ReserveAllocOneBlock(&DisplayBuff,
+		DisplayBuffsz, 5, falseblnr);
 #endif
 #if WantScalingTabl
 	ReserveAllocOneBlock(&ScalingTabl,
@@ -4816,27 +4878,25 @@ LOCALPROC UninitWhereAmI(void)
 
 LOCALFUNC blnr InitOSGLU(void)
 {
-	if (AllocMyMemory())
+	fprintf(stderr, "[wario] InitOSGLU: start\n");
+	if (AllocMyMemory()) { fprintf(stderr, "[wario] AllocMyMemory OK\n"); }
 #if CanGetAppPath
-	if (InitWhereAmI())
+	if (InitWhereAmI()) { fprintf(stderr, "[wario] InitWhereAmI OK\n"); }
 #endif
-#if dbglog_HAVE
-	if (dbglog_open())
-#endif
-	if (ScanCommandLine())
-	if (LoadMacRom())
-	if (LoadInitialImages())
+	if (ScanCommandLine()) { fprintf(stderr, "[wario] ScanCommandLine OK\n"); }
+	if (LoadMacRom()) { fprintf(stderr, "[wario] LoadMacRom OK\n"); }
+	if (LoadInitialImages()) { fprintf(stderr, "[wario] LoadInitialImages OK\n"); }
 #if UseActvCode
 	if (ActvCodeInit())
 #endif
-	if (InitLocationDat())
+	if (InitLocationDat()) { fprintf(stderr, "[wario] InitLocationDat OK\n"); }
 #if MySoundEnabled
 	if (MySound_Init())
 #endif
-	if (Screen_Init())
-	if (CreateMainWindow())
-	if (KC2MKCInit())
-	if (WaitForRom())
+	if (Screen_Init()) { fprintf(stderr, "[wario] Screen_Init OK\n"); }
+	if (CreateMainWindow()) { fprintf(stderr, "[wario] CreateMainWindow OK\n"); }
+	if (KC2MKCInit()) { fprintf(stderr, "[wario] KC2MKCInit OK\n"); }
+	if (WaitForRom()) { fprintf(stderr, "[wario] WaitForRom OK\n"); }
 	{
 		return trueblnr;
 	}
@@ -4900,11 +4960,13 @@ LOCALPROC UnInitOSGLU(void)
 
 int main(int argc, char **argv)
 {
+	fprintf(stderr, "[wario] main: argc=%d\n", argc);
 	my_argc = argc;
 	my_argv = argv;
 
 	ZapOSGLUVars();
 	if (InitOSGLU()) {
+		fprintf(stderr, "[wario] InitOSGLU returned true, entering loop\n");
 		ProgramMain();
 	}
 	UnInitOSGLU();

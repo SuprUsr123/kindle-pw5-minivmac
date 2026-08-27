@@ -1,8 +1,26 @@
 # Mini vMac for Kindle Oasis
 
 **A working Mini vMac port running System 6.0.8 natively on a jailbroken
-first-generation Kindle Oasis, with direct touchscreen input, an on-screen
-keyboard and trackpad, and MacPaint and MacWrite attached at launch.**
+first-generation Kindle Oasis *and* Kindle Paperwhite 5 (11th gen, PW5),
+with direct touchscreen input, an on-screen keyboard and trackpad, and
+MacPaint and MacWrite attached at launch.**
+
+---
+
+## Credits
+
+This is a fork of [ryancnelson/kindle-oasis-minivmac](https://github.com/ryancnelson/kindle-oasis-minivmac) — the
+original port for the first-generation Kindle Oasis, authored and tested on real
+hardware by **Ryan Nelson**.  All the hard device-level work (the ABI probes,
+X11 depth bridge, lab126 WM_NAME conventions, companion architecture, and
+the original build system) was done in that repository.  This fork extends the
+same approach to the **Kindle Paperwhite 5 (11th gen, PW5)**, adds a
+[fractional 2.4× display scale](minivmac-src/src/OSGLUXWN.c), a
+[full Macintosh Plus keyboard layout](wario-companion/companion.c) (KBD/NUM
+pages, latching modifiers), [KUAL and scriptlet launchers](kual/),
+and a [Linux cross-build workflow](scripts/setup-pw5.sh).
+
+---
 
 ![Mini vMac running MacPaint on a physical Kindle Oasis, docked keyboard/trackpad visible below the emulated Mac Plus display](docs/images/kindle-oasis-macpaint.webp)
 
@@ -30,13 +48,16 @@ reference to the Nintendo character: `/proc/cpuinfo` reports
   device.
 
 This is an owner-operated hardware-hacking prototype, verified end to end on
-an Oasis 1st gen. It is not yet packaged as a KUAL extension, and the build
-still depends on a locally extracted Oasis sysroot and generated Mini vMac
-configuration.
+an Oasis 1st gen and on a Paperwhite 5 (11th gen). It now ships as a
+[KUAL extension](kual/) with a library scriptlet so it launches from the
+Kindle's own UI, and the build is fully reproducible via
+[`scripts/setup-pw5.sh`](scripts/setup-pw5.sh) (Linux/Arch, no sudo) or the
+original macOS Homebrew flow below.
 
 ## Launching on the Kindle
 
-The standard launcher expects these files in `/mnt/us`:
+The standard launcher expects these files in `/mnt/us` (or in
+`/mnt/us/extensions/minivmac` if installed as a KUAL extension):
 
 ```text
 minivmac
@@ -57,6 +78,14 @@ ssh kindle-ts 'chmod +x /mnt/us/launch-wario.sh && /mnt/us/launch-wario.sh'
 The launcher sets `DISPLAY=:0`, starts Mini vMac with all three disks, and
 docks the companion underneath it. ROM and disk images are not included in
 this repository.
+
+### Launching from KUAL or the Library
+
+The [KUAL extension](kual/) installs as `extensions/minivmac/` (copy
+`menu.json`, `config.xml`, and `bin/` alongside the binaries and disk
+images). KUAL then shows **Mini vMac → Launch / Stop**. A library scriptlet
+(`documents/Mini vMac.sh` + its `.sdr` sidecar) appears in the Library and
+launches the same way, tap it like a book. See `kual/` for the source files.
 
 ## Repository layout
 
@@ -134,6 +163,44 @@ ssh kindle-ts '/mnt/us/oasis-hello /mnt/us/oasis-hello.png'
 ```
 
 ## Build setup
+
+The original Oasis flow (macOS, Homebrew cross toolchain for the Rust probes
+and the Oasis soft-float C binaries) is documented below. For the **PW5** the
+whole thing is automated by [`scripts/setup-pw5.sh`](scripts/setup-pw5.sh).
+
+### Kindle Paperwhite 5 (PW5) — Linux/Arch, automated
+
+The PW5 is armhf (hard-float), glibc 2.20, and its X server exposes the same
+8-bit StaticGray visual as the Oasis. One script downloads a prebuilt Bootlin
+armv7-eabihf glibc cross gcc, builds a merged sysroot from a device-extracted
+`pw5-sysroot/` plus the toolchain's CRT and headers, applies a small
+`stat()`/`__xstat` compat shim for glibc 2.20, and builds all three binaries:
+
+```sh
+# Prereqs: pw5-sysroot/ extracted from the PW5, plus curl/tar/ar/python3/cc
+./scripts/setup-pw5.sh
+```
+
+Outputs land in `minivmac-src/minivmac`, `wario-companion/wario-companion`,
+and `kindle-touch/touch`. Copy them plus `launch-wario.sh` (and the ROM/disk
+images you supply) to `/mnt/us/extensions/minivmac/` — or into `deploy/` for
+the KUAL bundle.
+
+Notes on the toolchain choices (learned the hard way):
+
+- **Do not use Zig for the glibc C binaries.** Zig's bundled glibc startup is
+  incompatible with the device's glibc 2.20 loader and segfaults *before*
+  `main()` — even a trivial `printf` dies. The Bootlin gcc + merged-sysroot
+  recipe above is what actually runs. (Zig is still fine for the fully-static
+  `kindle-touch`.)
+- The device ships no development headers, so the merged sysroot stages the
+  X11/GTK2 headers (host headers + a hand-generated armhf `glibconfig.h`) and
+  links against the device's own libs.
+- The fractional 2.4× display scale (1228×820) is baked into `OSGLUXWN.c` —
+  the integer scales don't fit the 1236px-wide panel (2× leaves 212px margin,
+  3× overflows).
+
+The original Oasis (macOS, Rust musl probes and soft-float C toolchain):
 
 ```sh
 brew tap messense/macos-cross-toolchains
@@ -521,3 +588,23 @@ touched here — routed around it by using a Homebrew cross-toolchain instead
 of `cross`'s container-based build. Flagged to Ryan separately; needs a
 manual fix since guessing the ECR registry hostname back from the mangled
 fragment would be a bad idea.
+
+## AI assistance disclaimer
+
+Both the original Oasis port by Ryan Nelson and this fork's PW5 work were
+substantially vibe-coded — produced with heavy AI coding-assistant assistance
+working interactively against real hardware. The AI authored and edited most
+of the code, ran the cross builds, and drove the SSH/mount-based on-device
+verification; the maintainers reviewed and tested the results on-device.
+
+This fork's additions (the PW5 cross-build toolchain setup in
+`scripts/setup-pw5.sh`, the merged-sysroot/glibc-2.20 compat work, the
+fractional 2.4× scaling in `OSGLUXWN.c`, the expanded keyboard and trackpad
+control scheme in `companion.c`, and the KUAL/scriptlet launchers) were
+produced with an AI coding assistant (Kilo) working with the maintainer. The
+original Oasis port was vibe-coded by Ryan Nelson the same way, predating and
+independent of this fork's AI session.
+
+Treat the whole thing accordingly: it is verified working on-device, but it
+is a prototype port of a prototype, produced substantially by
+machine-generated code.

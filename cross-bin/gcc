@@ -1,7 +1,5 @@
 #!/bin/bash
-# Derives the repo root from this script's own location instead of a
-# hardcoded checkout path, so this works regardless of where the repo
-# is cloned. WARIO_SYSROOT overrides if set.
-SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SYSROOT="${WARIO_SYSROOT:-$SELF_DIR/../oasis-sysroot}"
-exec /opt/homebrew/opt/arm-unknown-linux-gnueabi/bin/arm-unknown-linux-gnueabi-gcc --sysroot="$SYSROOT" "$@"
+SELF="$(readlink -f "${BASH_SOURCE[0]}")"
+SELF_DIR="$(cd "$(dirname "$SELF")" && pwd)"
+ROOT="$(dirname "$SELF_DIR")"
+exec "/home/suprusr124/kindle-oasis-minivmac/tools/armv7-eabihf--glibc--stable-2024.02-1/bin/arm-buildroot-linux-gnueabihf-gcc" --sysroot=/home/suprusr124/kindle-oasis-minivmac/tools/pw5-build-sysroot "$@"

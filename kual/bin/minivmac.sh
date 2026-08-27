@@ -1,0 +1,56 @@
+#!/bin/sh
+# Mini vMac launcher for Kindle (KUAL scriptlet).
+#
+# Locates its own extension directory (KUAL runs actions from the
+# extension dir), sets DISPLAY, finds the pt_mt touch node, then boots
+# mini vMac with the System 6.0.8 disks and docks wario-companion below.
+# Safe to run over SSH too.
+
+SELF_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+
+export DISPLAY=:0
+
+# Detect the touchscreen (pt_mt) evdev node; fall back to perfmgr, then
+# to /dev/input/event1.
+if [ -z "${WARIO_TOUCH_DEV:-}" ] && [ -r /proc/bus/input/devices ]; then
+	WARIO_TOUCH_DEV=$(awk 'BEGIN{RS=""; FS="\n"} /N: Name="pt_mt"/ {
+		for (i=1;i<=NF;i++) if ($i ~ /^H: Handlers=/) {
+			if (match($i, /event[0-9]+/)) print "/dev/input/" substr($i, RSTART, RLENGTH)
+		}
+	}' /proc/bus/input/devices | head -n 1)
+	[ -z "$WARIO_TOUCH_DEV" ] && WARIO_TOUCH_DEV=$(awk 'BEGIN{RS=""; FS="\n"} /perfmgr/ {
+		for (i=1;i<=NF;i++) if ($i ~ /^H: Handlers=/) {
+			if (match($i, /event[0-9]+/)) print "/dev/input/" substr($i, RSTART, RLENGTH)
+		}
+	}' /proc/bus/input/devices | head -n 1)
+	export WARIO_TOUCH_DEV
+fi
+export WARIO_TOUCH_DEV=${WARIO_TOUCH_DEV:-/dev/input/event1}
+
+# Stop any existing instance
+pkill -9 minivmac 2>/dev/null
+pkill -9 wario-companion 2>/dev/null
+sleep 1
+
+# Keep the screen awake for the session
+lipc-set-prop -i com.lab126.powerd preventScreenSaver 1 2>/dev/null
+
+# Build the disk list from what's actually present, startup disk first.
+set -- \
+	"$SELF_DIR/MacOS_6.0.8_System_Startup.img" \
+	"$SELF_DIR/MacOS_6.0.8_System_Additions.img" \
+	"$SELF_DIR/macpaint.dsk" \
+	"$SELF_DIR/MacWrite.dsk"
+DISKS=
+for d in "$@"; do
+	[ -f "$d" ] && DISKS="$DISKS \"$d\""
+done
+
+# Boot the Mac
+cd "$SELF_DIR"
+eval "\"$SELF_DIR/minivmac\" $DISKS" > /tmp/minivmac.log 2>&1 &
+sleep 4
+
+"$SELF_DIR/wario-companion" > /tmp/wario-companion.log 2>&1 &
+
+exit 0
