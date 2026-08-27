@@ -1,31 +1,45 @@
 #!/bin/sh
 # launch-wario.sh -- standard startup for the wario mini vMac setup.
 #
-# Boots mini vMac with the System 6.0.8 startup disk plus MacPaint and
-# MacWrite floppies attached by default (Ryan's request, 2026-08-22),
-# and launches wario-companion docked below it. Run this instead of
-# invoking minivmac/wario-companion by hand so the disk set stays
-# consistent across sessions.
+# Boots mini vMac with the System 6.0.8 startup disk plus up to two
+# selectable extra disks, and launches wario-companion docked below it.
+# System 6.0.8 only mounts three disks at once, so that's the cap.
 #
-# Deploy: scp to kindle-ts:/mnt/us/launch-wario.sh, chmod +x, run over
-# SSH with DISPLAY=:0 (no chroot, no KUAL wiring yet -- see README's
-# "Operational polish" backlog for that). On the PW5 the touch node is
-# auto-detected from /proc/bus/input/devices; override with
-# WARIO_TOUCH_DEV=/dev/input/eventN if detection fails.
+# Disk selection (in priority order):
+#   1. Positional args:  ./launch-wario.sh macpaint.dsk "Excel/disk01.img"
+#   2. WARIO_DISKS env:  WARIO_DISKS="macpaint.dsk MacWrite.dsk" ./launch-wario.sh
+#   3. Default:          macpaint.dsk MacWrite.dsk
+# Each selection mounts the startup disk first, then the extra disk(s)
+# (paths are resolved relative to this script's directory).
+#
+# Deploy: scp to the Kindle's minivmac extension dir, chmod +x, run over
+# SSH with DISPLAY=:0. On the PW5 the touch node is auto-detected from
+# /proc/bus/input/devices; override with WARIO_TOUCH_DEV=/dev/input/eventN.
 
 set -eu
 
-BIN_DIR=/mnt/us
+BIN_DIR="$(cd "$(dirname "$0")" && pwd)"
 MINIVMAC="$BIN_DIR/minivmac"
 COMPANION="$BIN_DIR/wario-companion"
-SYSTEM_DISK="$BIN_DIR/system608.img"
-MACPAINT_DISK="$BIN_DIR/macpaint.img"
-MACWRITE_DISK="$BIN_DIR/macwrite.dsk"
+
+# ---- Known disks (all optional except the startup disk) ----
+SYSTEM_DISK="$BIN_DIR/MacOS_6.0.8_System_Startup.img"
+ADDITIONS_DISK="$BIN_DIR/MacOS_6.0.8_System_Additions.img"
+MACPAINT_DISK="$BIN_DIR/macpaint.dsk"
+MACWRITE_DISK="$BIN_DIR/MacWrite.dsk"
+MACWRITEPRO_DISK1="$BIN_DIR/MacWritePro/disk01.img"
+MACWRITEPRO_DISK2="$BIN_DIR/MacWritePro/disk02.img"
+MACWRITEPRO_DISK3="$BIN_DIR/MacWritePro/disk03.img"
+ARTFULTYPE_DISK="$BIN_DIR/ArtfulType-800K.dsk"
+# Excel install set: $BIN_DIR/Excel/disk01.img .. disk13.img
+
+# Default extras when no args and no WARIO_DISKS:
+DEFAULT_EXTRAS="macpaint.dsk MacWrite.dsk"
 
 export DISPLAY=:0
 
 # mini vMac looks up vMac.ROM relative to its working directory, so run
-# from the deploy dir (the floppy paths below are already absolute).
+# from this directory (disk paths below are already absolute).
 cd "$BIN_DIR"
 
 # Auto-detect the touchscreen evdev node (Kindle touch driver reports
@@ -58,8 +72,28 @@ pkill -9 minivmac 2>/dev/null || true
 pkill -9 wario-companion 2>/dev/null || true
 sleep 1
 
-"$MINIVMAC" "$SYSTEM_DISK" "$MACPAINT_DISK" "$MACWRITE_DISK" \
-	> /tmp/minivmac.log 2>&1 &
+# ---- Build the disk list: startup disk first, then up to 2 extras ----
+if [ "$#" -gt 0 ]; then
+	SELECTED="$@"
+elif [ -n "${WARIO_DISKS:-}" ]; then
+	SELECTED="$WARIO_DISKS"
+else
+	SELECTED="$DEFAULT_EXTRAS"
+fi
+
+set -- "$SYSTEM_DISK"
+for d in $SELECTED; do
+	[ "$#" -ge 3 ] && break          # System 6 mounts at most 3 disks
+	case "$d" in
+		/*) p="$d" ;;
+		*)  p="$BIN_DIR/$d" ;;
+	esac
+	if [ -f "$p" ]; then
+		set -- "$@" "$p"
+	fi
+done
+
+"$MINIVMAC" "$@" > /tmp/minivmac.log 2>&1 &
 sleep 4
 
 "$COMPANION" > /tmp/wario-companion.log 2>&1 &
