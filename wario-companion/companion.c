@@ -776,16 +776,20 @@ static void on_click3(GtkWidget *w, gpointer d) { (void)w; (void)d; send_click_b
 static void on_mousedown(GtkWidget *w, gpointer d) { (void)w; (void)d; send_button(TRUE); }
 static void on_mouseup(GtkWidget *w, gpointer d) { (void)w; (void)d; send_button(FALSE); }
 
+/* Any exit path (close button, WM kill, gtk_main quit) must restore the
+ * powerd screen-saver state the launcher disabled, or the device stays
+ * awake forever. */
+static void on_destroy(GtkWidget *w, gpointer d) {
+	(void)w; (void)d;
+	system("lipc-set-prop -i com.lab126.powerd preventScreenSaver 0 2>/dev/null");
+	gtk_main_quit();
+}
+
 /* Close button: shut down the whole emulated Mac session -- both the
- * emulator and this companion. Sends the Mac a "shut down" keystroke
- * first (Command+Q is too modern for System 6; the Mac Plus power key is
- * the special keyboard power key, but mini vMac maps the Mac's power key
- * to F13 on a Mac keyboard -- send a clean shutdown via the Ctrl+Power
- * hack is unreliable, so just kill the processes: the Mac disk images
- * are read-only, nothing to save). */
+ * emulator and this companion -- and restore the screen-saver state. */
 static void on_close(GtkWidget *w, gpointer d) {
 	(void)w; (void)d;
-	/* Give the emulator a moment to flush, then take everything down. */
+	system("lipc-set-prop -i com.lab126.powerd preventScreenSaver 0 2>/dev/null");
 	system("pkill -9 minivmac 2>/dev/null; pkill -9 wario-companion 2>/dev/null; exit 0");
 	gtk_main_quit();
 }
@@ -958,7 +962,7 @@ int main(int argc, char **argv) {
 
 	show_keyboard_mode_bar(); /* matches default notebook page 0 */
 
-	g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+	g_signal_connect(window, "destroy", G_CALLBACK(on_destroy), NULL);
 
 	gtk_widget_show_all(window);
 

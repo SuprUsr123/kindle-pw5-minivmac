@@ -35,6 +35,9 @@ sleep 1
 # Keep the screen awake for the session
 lipc-set-prop -i com.lab126.powerd preventScreenSaver 1 2>/dev/null
 
+# Restore the screen-saver state no matter how the session ends.
+trap 'lipc-set-prop -i com.lab126.powerd preventScreenSaver 0 2>/dev/null' INT TERM HUP EXIT
+
 # Build the disk list from what's actually present, startup disk first.
 set -- \
 	"$SELF_DIR/MacOS_6.0.8_System_Startup.img" \
@@ -52,5 +55,9 @@ eval "\"$SELF_DIR/minivmac\" $DISKS" > /tmp/minivmac.log 2>&1 &
 sleep 4
 
 "$SELF_DIR/wario-companion" > /tmp/wario-companion.log 2>&1 &
+COMPANION_PID=$!
 
+# Stay alive until the session ends (companion exits), then the EXIT
+# trap restores the screen-saver state.
+wait "$COMPANION_PID" || true
 exit 0

@@ -48,6 +48,12 @@ export WARIO_TOUCH_DEV=${WARIO_TOUCH_DEV:-/dev/input/event1}
 
 lipc-set-prop -i com.lab126.powerd preventScreenSaver 1
 
+# Restore the screen-saver state no matter how the session ends (close
+# button, stop.sh, crash, Ctrl+C) -- otherwise the device stays awake
+# forever. The launcher stays alive waiting for the companion, so the
+# EXIT trap fires only when the session actually ends.
+trap 'lipc-set-prop -i com.lab126.powerd preventScreenSaver 0 2>/dev/null' INT TERM HUP EXIT
+
 pkill -9 minivmac 2>/dev/null || true
 pkill -9 wario-companion 2>/dev/null || true
 sleep 1
@@ -57,3 +63,9 @@ sleep 1
 sleep 4
 
 "$COMPANION" > /tmp/wario-companion.log 2>&1 &
+COMPANION_PID=$!
+
+# Stay alive until the session ends (companion exits), then the EXIT
+# trap restores the screen-saver state.
+wait "$COMPANION_PID" || true
+exit 0
